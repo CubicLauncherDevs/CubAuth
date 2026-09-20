@@ -1,6 +1,14 @@
+export interface ErrorDetails {
+  service: 'supabase';
+  operation: string;
+  upstreamStatus?: number;
+  upstreamCode?: string;
+}
+
 export class ApiError extends Error {
-  constructor(public status: number, public code: string, message: string) {
+  constructor(public status: number, public code: string, message: string, public details?: ErrorDetails) {
     super(message);
+    this.name = code;
   }
 }
 

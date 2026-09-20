@@ -229,6 +229,60 @@ Para subir o eliminar una skin: `Authorization: Bearer ACCESS_TOKEN`.
   CORS para sitios externos. `PUBLIC_URL` configura los enlaces de descubrimiento y
   confirmación de correo, no esta comprobación de origen.
 
+## Diagnosticar errores de Supabase
+
+Aunque las cuentas y contraseñas usan **Supabase Auth**, el registro también llama a
+Postgres para limitar intentos. Las sesiones Yggdrasil y los perfiles necesitan las
+tablas y funciones de la migración. Activar Auth por sí solo no instala esas funciones.
+
+Las excepciones incluyen un diagnóstico en la respuesta y en los logs del Worker:
+
+```json
+{
+  "error": "DatabaseFunctionMissing",
+  "errorMessage": "Supabase cannot find the required CubAuth RPC...",
+  "details": {
+    "service": "supabase",
+    "operation": "cubauth_rate_limit",
+    "upstreamStatus": 404,
+    "upstreamCode": "PGRST202"
+  }
+}
+```
+
+El panel también muestra operación, estado HTTP de Supabase y código. Los errores
+no incluyen respuestas SQL completas, argumentos, contraseñas ni tokens.
+
+| Excepción | Qué revisar |
+| --- | --- |
+| `DatabaseFunctionMissing` / `PGRST202` | Falta el RPC o PostgREST no lo encuentra en su caché. Ejecutá la migración si no está instalada. |
+| `DatabaseSchemaMissing` | Faltan tablas, columnas o funciones. Revisá que la migración completa se haya aplicado en el proyecto correcto. |
+| `DatabaseFunctionAmbiguous` | Existen varias versiones de un RPC con firmas incompatibles. Compará las funciones con la migración. |
+| `DatabaseSchemaNotExposed` | Habilitá la Data API y exponé `public`; mantené `cubauth` privado. |
+| `SupabaseKeyMissing` | Falta el secreto indicado en Cloudflare. |
+| `SupabaseCredentialsInvalid` | Clave de otro proyecto, vencida o de tipo incorrecto. Usá `secret`/`service_role` para `SUPABASE_SERVICE_ROLE_KEY`. |
+| `DatabasePermissionDenied` / `42501` | Revisá la clave de servicio y los permisos `EXECUTE` otorgados por la migración. |
+| `SupabaseConnectionFailed` / HTTP 530 | Comprobá la Project URL, dominio y disponibilidad del proyecto. |
+| `SupabaseTimeout` | La petición no respondió en 15 segundos. Revisá disponibilidad y conexión. |
+| `SupabaseUnavailable` | Revisá si el proyecto está pausado, saturado o con errores de base de datos. |
+| `SupabaseRateLimited` | Esperá antes de reintentar y revisá los límites del proyecto. |
+| `SupabaseInvalidResponse` | Se recibió contenido que no es JSON. Revisá URL y proxies. |
+| `DatabaseOperationFailed` | Consultá el código y la operación indicados en los logs de Supabase. |
+
+Para comprobar si el primer RPC del registro existe, ejecutá en el SQL Editor:
+
+```sql
+select to_regprocedure('public.cubauth_rate_limit(text,integer,integer)');
+```
+
+Si devuelve `NULL`, falta la función en ese proyecto. Ejecutá una sola vez el archivo
+`supabase/migrations/202609200001_cubauth.sql`. Si ya existe pero recibís `PGRST202`,
+actualizá la caché de la API:
+
+```sql
+NOTIFY pgrst, 'reload schema';
+```
+
 ## Pruebas
 
 ```bash

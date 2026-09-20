@@ -140,7 +140,103 @@ describe('Workers HTTP routes', () => {
     expect(error).toContain('HTTP 530');
     expect(error).toContain('SUPABASE_URL');
     expect(error).not.toContain('private upstream diagnostics');
-    expect(log).toHaveBeenCalledWith('Supabase connection failed', 'test.supabase.co', 530);
+    expect(log).toHaveBeenCalledWith('Supabase operation failed', expect.objectContaining({
+      error: 'SupabaseConnectionFailed', host: 'test.supabase.co', operation: 'cubauth_rate_limit', upstreamStatus: 530,
+    }));
+  });
+
+  it.each([
+    [404, 'PGRST202', 'DatabaseFunctionMissing', 'migration'],
+    [400, '42P01', 'DatabaseSchemaMissing', 'migration'],
+    [400, '42703', 'DatabaseSchemaMissing', 'migration'],
+    [406, 'PGRST106', 'DatabaseSchemaNotExposed', 'public schema'],
+    [300, 'PGRST203', 'DatabaseFunctionAmbiguous', 'function signatures'],
+    [401, 'PGRST301', 'SupabaseCredentialsInvalid', 'SUPABASE_SERVICE_ROLE_KEY'],
+    [401, undefined, 'SupabaseCredentialsInvalid', 'SUPABASE_SERVICE_ROLE_KEY'],
+    [403, '42501', 'DatabasePermissionDenied', 'service_role'],
+    [401, '42501', 'DatabasePermissionDenied', 'service_role'],
+    [404, undefined, 'SupabaseEndpointNotFound', 'Data API'],
+    [429, undefined, 'SupabaseRateLimited', 'rate-limiting'],
+    [503, 'PGRST003', 'SupabaseUnavailable', 'project status'],
+    [500, undefined, 'SupabaseUnavailable', 'project status'],
+    [409, '23505', 'DatabaseOperationFailed', 'logs'],
+  ] as const)('diagnoses a database failure (HTTP %s, %s) without exposing upstream details', async (status, code, error, hint) => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(Response.json({
+      code, message: `request contained ${env.SUPABASE_SERVICE_ROLE_KEY}`,
+      details: 'SQL row contains private-password-and-email', hint: 'private upstream hint',
+    }, { status }));
+    const log = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const response = await app.request('https://auth.example.com/account/register', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email: 'player@example.com', username: 'PlayerOne', password: 'test-password-only' }),
+    }, env);
+    expect(response.status).toBe(503);
+    const body = await response.json();
+    expect(body).toMatchObject({ error, errorMessage: expect.stringContaining(hint), details: {
+      service: 'supabase', operation: 'cubauth_rate_limit', upstreamStatus: status,
+      ...(code ? { upstreamCode: code } : {}),
+    } });
+    const output = JSON.stringify([body, log.mock.calls]);
+    expect(output).not.toContain(env.SUPABASE_SERVICE_ROLE_KEY);
+    expect(output).not.toContain('private-password-and-email');
+    expect(output).not.toContain('private upstream hint');
+    expect(log).toHaveBeenCalledOnce();
+  });
+
+  it('handles non-JSON error pages and rejects nonstandard upstream codes', async () => {
+    const spy = vi.spyOn(globalThis, 'fetch');
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    for (const upstream of [
+      new Response('<html>private upstream error</html>', { status: 502 }),
+      Response.json({ code: 'private-upstream-code', message: 'private upstream error' }, { status: 400 }),
+    ]) {
+      spy.mockResolvedValueOnce(upstream);
+      const response = await app.request('https://auth.example.com/authserver/validate', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ accessToken: 'test-token' }),
+      }, env);
+      expect(response.status).toBe(503);
+      const output = await response.text();
+      expect(output).not.toContain('private');
+      expect(JSON.parse(output).details).not.toHaveProperty('upstreamCode');
+      expect(output).toContain('cubauth_session');
+    }
+  });
+
+  it('reports malformed successful responses instead of an unhandled 500', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('<html>proxy landing page</html>'));
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    const response = await app.request('https://auth.example.com/authserver/validate', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ accessToken: 'test-token' }),
+    }, env);
+    expect(response.status).toBe(503);
+    expect(await response.json()).toMatchObject({ error: 'SupabaseInvalidResponse', details: { upstreamStatus: 200 } });
+  });
+
+  it.each([
+    ['TypeError', 'SupabaseConnectionFailed'], ['TimeoutError', 'SupabaseTimeout'], ['AbortError', 'SupabaseTimeout'],
+  ])('classifies fetch failure %s', async (name, expectedError) => {
+    vi.spyOn(globalThis, 'fetch').mockRejectedValue(Object.assign(new Error(`private ${env.SUPABASE_SERVICE_ROLE_KEY}`), { name }));
+    const log = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const response = await app.request('https://auth.example.com/authserver/validate', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ accessToken: 'test-token' }),
+    }, env);
+    expect(response.status).toBe(503);
+    const body = await response.json();
+    expect(body).toMatchObject({ error: expectedError, details: { operation: 'cubauth_session' } });
+    expect(JSON.stringify([body, log.mock.calls])).not.toContain(env.SUPABASE_SERVICE_ROLE_KEY);
+  });
+
+  it.each([
+    ['', 'SupabaseKeyMissing'], ['sb_publishable_wrong_role', 'SupabaseCredentialsInvalid'],
+  ])('rejects invalid service key configuration before making a request', async (key, expectedError) => {
+    const spy = vi.spyOn(globalThis, 'fetch');
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    const response = await app.request('https://auth.example.com/authserver/validate', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ accessToken: 'test-token' }),
+    }, { ...env, SUPABASE_SERVICE_ROLE_KEY: key });
+    expect(response.status).toBe(503);
+    expect(await response.json()).toMatchObject({ error: expectedError, errorMessage: expect.stringContaining('SUPABASE_SERVICE_ROLE_KEY') });
+    expect(spy).not.toHaveBeenCalled();
   });
 
   it.each(['https://evil.example', 'http://localhost:8787', 'null'])('rejects a foreign browser origin (%s) before touching Supabase', async origin => {

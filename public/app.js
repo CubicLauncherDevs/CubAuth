@@ -19,7 +19,13 @@ function notice(message, error = false) {
 async function api(path, options = {}) {
   const response = await fetch(path, { ...options, credentials: 'omit' });
   const body = response.status === 204 ? null : await response.json();
-  if (!response.ok) throw new Error(body?.errorMessage || 'No se pudo completar la solicitud.');
+  if (!response.ok) {
+    const details = body?.details;
+    const diagnostic = details?.service === 'supabase'
+      ? [details.operation, details.upstreamStatus && `HTTP ${details.upstreamStatus}`, details.upstreamCode].filter(Boolean).join(' · ')
+      : '';
+    throw new Error(`${body?.errorMessage || 'No se pudo completar la solicitud.'}${diagnostic ? ` [${diagnostic}]` : ''}`);
+  }
   return body;
 }
 

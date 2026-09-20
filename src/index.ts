@@ -30,7 +30,9 @@ app.use('*', async (c, next) => {
 app.onError((error, c) => {
   if (error instanceof ApiError) {
     if (error.status === 429) c.header('Retry-After', '600');
-    return c.newResponse(JSON.stringify({ error: error.code, errorMessage: error.message }), error.status as 400, { 'Content-Type': 'application/json; charset=utf-8' });
+    return c.newResponse(JSON.stringify({ error: error.code, errorMessage: error.message,
+      ...(error.details ? { details: error.details } : {}),
+    }), error.status as 400, { 'Content-Type': 'application/json; charset=utf-8' });
   }
   // Do not log request bodies, tokens, or raw upstream error messages.
   console.error('Unhandled request failure', error.name);
