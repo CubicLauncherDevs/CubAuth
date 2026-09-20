@@ -18,6 +18,7 @@ beforeAll(async () => {
   env = { ...workerEnv,
     PUBLIC_URL: 'https://auth.example.com', SUPABASE_URL: 'https://test.supabase.co', SERVER_NAME: 'CubAuth test',
     ALLOW_REGISTRATION: 'true', TOKEN_TTL_SECONDS: '1296000',
+    ACCOUNT_URL: '', WEB_ORIGINS: '',
     SUPABASE_ANON_KEY: 'sb_publishable_test', SUPABASE_SERVICE_ROLE_KEY: 'sb_secret_test',
     SIGNING_PUBLIC_KEY: `-----BEGIN PUBLIC KEY-----\n${base64(new Uint8Array(await crypto.subtle.exportKey('spki', pair.publicKey) as ArrayBuffer))}\n-----END PUBLIC KEY-----`,
     SIGNING_PRIVATE_KEY: `-----BEGIN PRIVATE KEY-----\n${base64(new Uint8Array(await crypto.subtle.exportKey('pkcs8', pair.privateKey) as ArrayBuffer))}\n-----END PRIVATE KEY-----`,
@@ -80,6 +81,65 @@ describe('real Workers crypto and PNG processing', () => {
 });
 
 describe('Workers HTTP routes', () => {
+  const webOrigin = 'https://accounts.cubiclauncher.org';
+
+  it('accepts preflights only for the configured origin, methods and headers', async () => {
+    const spy = vi.spyOn(globalThis, 'fetch');
+    const webEnv = { ...env, WEB_ORIGINS: webOrigin };
+    const preflight = (origin: string, headers = 'authorization, content-type', method = 'PUT') => app.request('https://auth.example.com/api/user/profile/00000000000040008000000000000001/skin', {
+      method: 'OPTIONS', headers: { Origin: origin, 'Access-Control-Request-Method': method, 'Access-Control-Request-Headers': headers },
+    }, webEnv);
+    const allowed = await preflight(webOrigin);
+    expect(allowed.status).toBe(204);
+    expect(allowed.headers.get('Access-Control-Allow-Origin')).toBe(webOrigin);
+    expect(allowed.headers.get('Access-Control-Allow-Headers')).toContain('Authorization');
+    expect(allowed.headers.get('Access-Control-Allow-Credentials')).toBeNull();
+    expect(allowed.headers.get('Vary')).toContain('Origin');
+    for (const foreign of ['https://accounts.cubiclauncher.org.evil.example', 'https://evil.example', 'null']) {
+      const rejected = await preflight(foreign);
+      expect(rejected.status).toBe(403);
+      expect(rejected.headers.get('Access-Control-Allow-Origin')).toBeNull();
+    }
+    expect((await preflight(webOrigin, 'x-unknown-header')).status).toBe(403);
+    expect((await preflight(webOrigin, '', 'PATCH')).status).toBe(403);
+    expect(spy).not.toHaveBeenCalled();
+  });
+
+  it('allows registration from Vercel and returns readable CORS errors', async () => {
+    const webEnv = { ...env, WEB_ORIGINS: webOrigin, ACCOUNT_URL: webOrigin };
+    const spy = vi.spyOn(globalThis, 'fetch').mockImplementation(async input => {
+      const url = new URL(String(input));
+      if (url.pathname.endsWith('/cubauth_rate_limit')) return Response.json(true);
+      expect(url.pathname).toBe('/auth/v1/signup');
+      expect(url.searchParams.get('redirect_to')).toBe(`${webOrigin}/login`);
+      return Response.json({ user: { id: profile.user_id } });
+    });
+    const response = await app.request('https://auth.example.com/account/register', {
+      method: 'POST', headers: { Origin: webOrigin, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email: 'player@example.com', username: 'PlayerOne', password: 'test-password-only' }),
+    }, webEnv);
+    expect(response.status).toBe(202);
+    expect(response.headers.get('Access-Control-Allow-Origin')).toBe(webOrigin);
+    expect(await response.json()).toMatchObject({ emailConfirmationRequired: true });
+    expect(spy).toHaveBeenCalledTimes(2);
+    const error = await app.request('https://auth.example.com/authserver/authenticate', {
+      method: 'POST', headers: { Origin: webOrigin, 'Content-Type': 'application/json' }, body: '{',
+    }, webEnv);
+    expect(error.status).toBe(400);
+    expect(error.headers.get('Access-Control-Allow-Origin')).toBe(webOrigin);
+  });
+
+  it('links to the new frontend and redirects the old account page without redirecting the API root', async () => {
+    const webEnv = { ...env, ACCOUNT_URL: webOrigin, WEB_ORIGINS: webOrigin };
+    const meta = await app.request('https://auth.example.com/', { headers: { Origin: webOrigin } }, webEnv);
+    expect(meta.status).toBe(200);
+    expect(meta.headers.get('Access-Control-Allow-Origin')).toBe(webOrigin);
+    expect(await meta.json()).toMatchObject({ meta: { registrationEnabled: true, links: { homepage: `${webOrigin}/account`, register: `${webOrigin}/register` } } });
+    const legacy = await app.request('https://auth.example.com/account', {}, webEnv);
+    expect(legacy.status).toBe(302);
+    expect(legacy.headers.get('Location')).toBe(`${webOrigin}/account`);
+  });
+
   it('serves the panel with CSP and API discovery', async () => {
     const response = await app.request('https://auth.example.com/account', {}, env);
     expect(response.status).toBe(200);

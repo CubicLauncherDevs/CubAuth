@@ -8,6 +8,8 @@ export interface Env {
   SIGNING_PUBLIC_KEY: string;
   ALLOW_REGISTRATION: string;
   TOKEN_TTL_SECONDS: string;
+  ACCOUNT_URL?: string;
+  WEB_ORIGINS?: string;
   ASSETS: Fetcher;
 }
 

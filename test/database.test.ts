@@ -38,10 +38,12 @@ beforeAll(async () => {
     create role anon; create role authenticated; create role service_role;
     create schema auth; create schema storage;
     create table auth.users(id uuid primary key, email text unique, raw_user_meta_data jsonb,
-      banned_until timestamptz, encrypted_password text);
+      banned_until timestamptz, encrypted_password text, email_confirmed_at timestamptz default now(),
+      new_email text default '', created_at timestamptz default now());
     create table storage.buckets(id text primary key, name text, public boolean, file_size_limit bigint, allowed_mime_types text[]);
   `);
   await db.exec(readFileSync(new NodeURL('../supabase/migrations/202609200001_cubauth.sql', import.meta.url), 'utf8'));
+  await db.exec(readFileSync(new NodeURL('../supabase/migrations/202609200002_account_settings.sql', import.meta.url), 'utf8'));
 });
 afterAll(async () => { await db.close(); });
 
@@ -135,11 +137,47 @@ describe('PostgreSQL migration and session rules', () => {
     await rpc('cubauth_cleanup');
     expect(await rpc('cubauth_session', { p_hash: await sha256('a'.repeat(64)) })).not.toBeNull();
   });
+
+  it('changes names atomically, preserves UUID and refreshes other sessions with the new name', async () => {
+    await issue(USER, 'browser');
+    await issue(USER, 'launcher');
+    const launcherHash = await sha256('launcher');
+    await rpc('cubauth_join', { p_hash: launcherHash, p_profile: profile.id, p_server: 'before-rename', p_ip: '127.0.0.1' });
+    const renamed = await rpc<Session>('cubauth_rename_profile', {
+      p_hash: await sha256('browser'), p_name: 'NewName', p_new_hash: 'c'.repeat(64), p_ttl: 3600,
+    });
+    expect(renamed.profile).toMatchObject({ id: profile.id, name: 'NewName' });
+    expect(await rpc('cubauth_session', { p_hash: launcherHash })).toBeNull();
+    expect(await rpc('cubauth_join', { p_hash: launcherHash, p_profile: profile.id, p_server: 'after-rename', p_ip: '127.0.0.1' })).toBe(false);
+    expect(await rpc('cubauth_has_joined', { p_name: 'NewName', p_server: 'before-rename' })).toBeNull();
+    expect(await rpc('cubauth_login_identity', { p_username: 'PlayerOne' })).toBeNull();
+    expect(await rpc('cubauth_login_identity', { p_username: 'NewName' })).toMatchObject({ user_id: USER });
+    const refreshed = await rpc<Session>('cubauth_refresh', { p_hash: launcherHash, p_new_hash: 'd'.repeat(64), p_client: 'launcher', p_ttl: 3600 });
+    expect(refreshed.profile).toMatchObject({ id: profile.id, name: 'NewName' });
+    expect(await rpc('cubauth_account', { p_hash: 'c'.repeat(64) })).toMatchObject({ email: 'player@example.com', history_total: 1,
+      name_history: [{ previous_name: 'PlayerOne', new_name: 'NewName', changed_at: expect.any(String) }] });
+  });
+
+  it('rejects duplicate names without changing sessions or history and keeps account details private', async () => {
+    await issue();
+    const hash = await sha256('a'.repeat(64));
+    expect(await rpc('cubauth_rename_profile', { p_hash: hash, p_name: 'playertwo', p_new_hash: 'c'.repeat(64), p_ttl: 3600 })).toEqual({ error: 'UsernameTaken' });
+    expect(await rpc('cubauth_session', { p_hash: hash })).not.toBeNull();
+    expect(await rpc('cubauth_account', { p_hash: hash })).toMatchObject({ history_total: 0, email_confirmed: true });
+    expect(await rpc('cubauth_account', { p_hash: 'missing' })).toBeNull();
+    expect(await rpc('cubauth_rename_profile', { p_hash: 'missing', p_name: 'OtherName', p_new_hash: 'c'.repeat(64), p_ttl: 3600 })).toBeNull();
+    await db.exec('set role anon');
+    try { await expect(rpc('cubauth_account', { p_hash: hash })).rejects.toThrow(/permission denied/); }
+    finally { await db.exec('reset role'); }
+    await db.exec('set role authenticated');
+    try { await expect(rpc('cubauth_rename_profile', { p_hash: hash, p_name: 'OtherName', p_new_hash: 'c'.repeat(64), p_ttl: 3600 })).rejects.toThrow(/permission denied/); }
+    finally { await db.exec('reset role'); }
+  });
 });
 
 describe('HTTP protocol with real SQL RPCs and simulated Supabase Auth', () => {
-  const call = (path: string, body?: unknown, method = body === undefined ? 'GET' : 'POST') => app.request(`https://auth.example.com${path}`, {
-    method, headers: { 'Content-Type': 'application/json', 'CF-Connecting-IP': '203.0.113.1' },
+  const call = (path: string, body?: unknown, method = body === undefined ? 'GET' : 'POST', token?: string) => app.request(`https://auth.example.com${path}`, {
+    method, headers: { 'Content-Type': 'application/json', 'CF-Connecting-IP': '203.0.113.1', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
     ...(body === undefined ? {} : { body: JSON.stringify(body) }),
   }, env);
 
@@ -158,6 +196,18 @@ describe('HTTP protocol with real SQL RPCs and simulated Supabase Auth', () => {
         return Response.json({ user: { id: USER }, access_token: 'supabase-session' });
       }
       if (url.pathname === '/auth/v1/logout') return new Response(null, { status: 204 });
+      if (url.pathname === '/auth/v1/user') {
+        expect(new Headers(init?.headers).get('Authorization')).toBe('Bearer supabase-session');
+        expect(new Headers(init?.headers).get('apikey')).toBe('sb_publishable_test');
+        const body = JSON.parse(String(init?.body));
+        if (body.password) await db.query('update auth.users set encrypted_password=$1 where id=$2', [`hash-of-${body.password}`, USER]);
+        if (body.email) await db.query('update auth.users set new_email=$1 where id=$2', [body.email, USER]);
+        return Response.json({ id: USER, email: 'player@example.com', new_email: body.email ?? '' });
+      }
+      if (url.pathname === '/auth/v1/resend') {
+        expect(JSON.parse(String(init?.body)).type).toBe('signup');
+        return Response.json({});
+      }
       throw new Error(`Unexpected external request: ${url.pathname}`);
     });
   });
@@ -197,5 +247,45 @@ describe('HTTP protocol with real SQL RPCs and simulated Supabase Auth', () => {
     const response = await call('/authserver/refresh', { accessToken: 'a'.repeat(64), selectedProfile: { id: other.id.replaceAll('-', ''), name: other.name } });
     expect(response.status).toBe(400);
     expect((await call('/authserver/validate', { accessToken: 'a'.repeat(64) })).status).toBe(204);
+  });
+
+  it('requires a valid session and current password to change a username', async () => {
+    const token = 'a'.repeat(64);
+    await issue(USER, token);
+    expect((await call('/account/me')).status).toBe(401);
+    expect((await call('/account/username', { username: 'NewName', currentPassword: 'bad' }, 'POST', token)).status).toBe(403);
+    expect(await rpc('cubauth_session', { p_hash: await sha256(token) })).not.toBeNull();
+    const response = await call('/account/username', { username: 'NewName', currentPassword: 'correct-password' }, 'POST', token);
+    expect(response.status).toBe(200);
+    const result = await response.json() as { session: { accessToken: string; selectedProfile: { id: string; name: string } } };
+    expect(result.session.selectedProfile).toEqual({ id: profile.id.replaceAll('-', ''), name: 'NewName' });
+    expect((await call('/account/me', undefined, 'GET', token)).status).toBe(401);
+    const details = await call('/account/me', undefined, 'GET', result.session.accessToken);
+    expect(await details.json()).toMatchObject({ email: 'player@example.com', nameHistory: [{ previousName: 'PlayerOne', newName: 'NewName' }], historyTotal: 1 });
+  });
+
+  it('updates passwords through Supabase Auth and replaces only the current browser session', async () => {
+    const token = 'a'.repeat(64), otherToken = 'b'.repeat(64);
+    await issue(USER, token); await issue(USER, otherToken);
+    const response = await call('/account/password', { currentPassword: 'correct-password', newPassword: 'new-password-for-testing' }, 'POST', token);
+    expect(response.status).toBe(200);
+    const body = await response.json() as { session: { accessToken: string } };
+    expect(JSON.stringify(body)).not.toContain('supabase-session');
+    expect(await rpc('cubauth_session', { p_hash: await sha256(token) })).toBeNull();
+    expect(await rpc('cubauth_session', { p_hash: await sha256(otherToken) })).toBeNull();
+    expect(await rpc('cubauth_session', { p_hash: await sha256(body.session.accessToken) })).not.toBeNull();
+  });
+
+  it('requests a confirmed email change without marking it verified in the database', async () => {
+    const token = 'a'.repeat(64); await issue(USER, token);
+    const response = await call('/account/email', { currentPassword: 'correct-password', email: 'new@example.com' }, 'POST', token);
+    expect(response.status).toBe(200);
+    const details = await call('/account/me', undefined, 'GET', token);
+    expect(await details.json()).toMatchObject({ email: 'player@example.com', pendingEmail: 'new@example.com', emailConfirmed: true });
+  });
+
+  it('resends confirmation with a generic response and applies per-address limits', async () => {
+    for (let i = 0; i < 3; i++) expect((await call('/account/resend-verification', { email: 'player@example.com' })).status).toBe(202);
+    expect((await call('/account/resend-verification', { email: 'player@example.com' })).status).toBe(429);
   });
 });

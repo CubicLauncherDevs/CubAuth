@@ -33,11 +33,15 @@ no necesita binarios de imágenes en producción.
 ## 2. Preparar Supabase
 
 1. Creá un proyecto y abrí **SQL Editor**.
-2. Ejecutá una sola vez el contenido de:
+2. Ejecutá una sola vez cada archivo, en este orden:
 
    ```text
    supabase/migrations/202609200001_cubauth.sql
+   supabase/migrations/202609200002_account_settings.sql
    ```
+
+   Si ya instalaste la primera migración, ejecutá solamente la segunda. Agrega
+   gestión de cuenta e historial sin borrar usuarios, perfiles ni UUIDs.
 
 3. En **Authentication → Providers**, habilitá Email/password. Configurá una
    longitud mínima de contraseña de 10 caracteres. Decidí si querés confirmar correo.
@@ -106,6 +110,37 @@ Abrí `http://localhost:8787/account`. El Worker local se conecta al proyecto Su
 que configuraste; usá un proyecto de desarrollo para esas pruebas.
 
 ## 4. Desplegar en Cloudflare
+
+### Panel Vue en Vercel
+
+El nuevo panel está en el repositorio `CubicLauncherDevs/AccountsFrontend` y se
+publica en `https://accounts.cubiclauncher.org`. El Worker continúa atendiendo la API
+Yggdrasil en `https://auth.cubiclauncher.org`.
+
+Variables adicionales de `wrangler.jsonc`:
+
+| Variable | Valor de producción |
+| --- | --- |
+| `ACCOUNT_URL` | `https://accounts.cubiclauncher.org` |
+| `WEB_ORIGINS` | `https://accounts.cubiclauncher.org` |
+
+`WEB_ORIGINS` admite orígenes exactos separados por comas. Habilita preflights para
+`Content-Type` y `Authorization`, sin cookies cross-origin. Los errores también
+incluyen los encabezados CORS para los orígenes permitidos. Los launchers nativos
+sin `Origin` siguen funcionando.
+
+Con `ACCOUNT_URL` configurado, `GET /account` redirige al panel nuevo y los enlaces
+de registro/confirmación apuntan a `/register` y `/login` del frontend. En Supabase
+configurá Site URL con `https://accounts.cubiclauncher.org/login` y permití ambas
+Redirect URLs: `https://accounts.cubiclauncher.org/login` y
+`https://accounts.cubiclauncher.org/account`.
+Sin `ACCOUNT_URL`, sigue disponible el panel HTML de respaldo en el Worker.
+
+El frontend usa un proxy local de Vite durante el desarrollo. Para un frontend
+local o preview que consulte la API directamente, agregá su origen exacto a
+`WEB_ORIGINS`. El dominio propio de la petición siempre se acepta.
+
+### Publicar la API
 
 Establecé primero `PUBLIC_URL` y `SUPABASE_URL` con los valores de producción.
 
@@ -187,6 +222,11 @@ Los errores usan `{ "error": "...", "errorMessage": "..." }`.
 | --- | --- | --- |
 | GET | `/` | Metadatos, clave pública y dominios de texturas |
 | POST | `/account/register` | `{email, username, password}`; HTTP 202 |
+| GET | `/account/me` | Detalles privados del titular, confirmación del correo e historial; requiere Bearer |
+| POST | `/account/username` | `{username, currentPassword}`; preserva UUID, registra historial y devuelve una sesión nueva |
+| POST | `/account/email` | `{email, currentPassword}`; solicita cambio mediante Supabase Auth |
+| POST | `/account/password` | `{currentPassword, newPassword}`; revoca sesiones anteriores y devuelve una nueva |
+| POST | `/account/resend-verification` | `{email}`; reenvío de confirmación, respuesta genérica HTTP 202 |
 | POST | `/authserver/authenticate` | Credenciales → sesión y perfil |
 | POST | `/authserver/refresh` | Rota el token conservando `clientToken` |
 | POST | `/authserver/validate` | 204 válido; 403 inválido |
@@ -214,20 +254,45 @@ Para subir o eliminar una skin: `Authorization: Bearer ACCESS_TOKEN`.
 - Al quitar/cambiar una skin se actualiza el perfil. Los archivos anteriores permanecen
   en Storage para mantener referencias y cachés existentes; la limpieza de registros
   caducados no elimina archivos. Podés gestionar esa retención desde Supabase.
-- No incluye capas, skins HD, múltiples perfiles por cuenta ni cambios de nombre.
+- No incluye capas, skins HD ni múltiples perfiles por cuenta.
+
+### Gestión de cuenta
+
+Las operaciones de nombre, correo y contraseña requieren el token Yggdrasil de la
+cuenta **y su contraseña actual**. Supabase verifica la contraseña y realiza los
+cambios de credenciales; la sesión temporal de Supabase nunca sale del Worker.
+
+La migración `202609200002_account_settings.sql` guarda cada cambio de nombre en
+`cubauth.name_history`, asociado al UUID permanente del perfil. El historial es
+privado, se conserva completo y `/account/me` devuelve los últimos 20 cambios.
+No reconstruye nombres anteriores a su instalación. El login solo acepta el nombre
+actual o el correo, no los nombres históricos.
+
+Tras un cambio de nombre, las demás sesiones quedan temporalmente inválidas y
+deben usar `/authserver/refresh`. Un token caducado o revocado sigue sin poder
+renovarse. La pestaña que cambia el nombre recibe su token renovado en la respuesta.
+
+Los cambios de correo respetan la confirmación configurada por Supabase. Con
+**Secure email change** activo, pueden requerir enlaces en el correo anterior y el
+nuevo. `/account/me` expone el correo pendiente sin presentarlo como confirmado.
+El estado de confirmación proviene de Supabase: si **Confirm email** está desactivado,
+Supabase confirma automáticamente las cuentas nuevas. Activá esa opción y SMTP para
+exigir verificación por correo.
 
 ### Límites
 
 - Login/signout: 40 intentos por IP y 10 por cuenta cada 10 minutos, compartidos.
 - Registro: 5 por IP por hora.
 - Cambios de skin: 20 por cuenta cada 10 minutos.
+- Cambios de cuenta: 10 por usuario cada 10 minutos, además del límite de reautenticación.
+- Reenvíos de confirmación: 5 por IP por hora y 3 por dirección cada 10 minutos,
+  además de los límites de correo de Supabase.
 - Los límites y sesiones se guardan en Postgres, no en la memoria del Worker.
 - `CF-Connecting-IP` es proporcionado por Cloudflare. En desarrollo local, sin ese
   encabezado, se utiliza `127.0.0.1`.
 - Las peticiones nativas sin `Origin` están permitidas. Las peticiones del panel
-  deben venir del mismo origen que la URL del Worker que las recibe; no se habilita
-  CORS para sitios externos. `PUBLIC_URL` configura los enlaces de descubrimiento y
-  confirmación de correo, no esta comprobación de origen.
+  deben venir del mismo origen que la URL del Worker o de un origen exacto incluido
+  en `WEB_ORIGINS`. `PUBLIC_URL` es la raíz de la API y `ACCOUNT_URL` la del panel.
 
 ## Diagnosticar errores de Supabase
 

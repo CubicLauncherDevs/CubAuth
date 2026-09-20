@@ -13,7 +13,7 @@ export async function databaseCode(response: Response): Promise<string | undefin
 export function databaseException(status: number, code?: string): { error: string; message: string } {
   if (code === 'PGRST202') return {
     error: 'DatabaseFunctionMissing',
-    message: "Supabase cannot find the required CubAuth RPC. Apply supabase/migrations/202609200001_cubauth.sql in this project, then run NOTIFY pgrst, 'reload schema'; in the SQL Editor.",
+    message: "Supabase cannot find the required CubAuth RPC. Apply the pending SQL files in supabase/migrations/ in order (including 202609200002_account_settings.sql), then run NOTIFY pgrst, 'reload schema'; in the SQL Editor.",
   };
   if (['42P01', '3F000', '42883', '42703', 'PGRST205'].includes(code ?? '')) return {
     error: 'DatabaseSchemaMissing',
