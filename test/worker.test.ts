@@ -117,6 +117,32 @@ describe('Workers HTTP routes', () => {
     expect(spy).toHaveBeenCalledTimes(2);
   });
 
+  it.each(['https://YOUR_PROJECT.supabase.co', 'not-a-url', 'https://test.supabase.co/rest/v1'])('reports invalid Supabase configuration (%s) before making any request', async supabaseUrl => {
+    const spy = vi.spyOn(globalThis, 'fetch');
+    const response = await app.request('https://auth.example.com/account/register', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email: 'player@example.com', username: 'PlayerOne', password: 'test-password-only' }),
+    }, { ...env, SUPABASE_URL: supabaseUrl });
+    expect(response.status).toBe(503);
+    expect(await response.json()).toMatchObject({ error: 'ConfigurationError', errorMessage: expect.stringContaining('SUPABASE_URL') });
+    expect(spy).not.toHaveBeenCalled();
+  });
+
+  it('explains upstream 530 errors without forwarding the backend body', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('private upstream diagnostics', { status: 530 }));
+    const log = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const response = await app.request('https://auth.example.com/account/register', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email: 'player@example.com', username: 'PlayerOne', password: 'test-password-only' }),
+    }, env);
+    expect(response.status).toBe(503);
+    const error = await response.text();
+    expect(error).toContain('HTTP 530');
+    expect(error).toContain('SUPABASE_URL');
+    expect(error).not.toContain('private upstream diagnostics');
+    expect(log).toHaveBeenCalledWith('Supabase connection failed', 'test.supabase.co', 530);
+  });
+
   it.each(['https://evil.example', 'http://localhost:8787', 'null'])('rejects a foreign browser origin (%s) before touching Supabase', async origin => {
     const spy = vi.spyOn(globalThis, 'fetch');
     const response = await app.request('https://auth.example.com/authserver/invalidate', {

@@ -1,9 +1,12 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
-  "name": "cubauth",
+  "name": "authserver",
   "main": "src/index.ts",
   "compatibility_date": "2026-09-01",
   "compatibility_flags": ["nodejs_compat"],
+  "routes": [
+    { "pattern": "auth.cubiclauncher.org", "custom_domain": true }
+  ],
   "assets": {
     "directory": "./public",
     "binding": "ASSETS",
@@ -11,9 +14,9 @@
   },
   "triggers": { "crons": ["17 * * * *"] },
   "vars": {
-    "PUBLIC_URL": "http://localhost:8787",
+    "PUBLIC_URL": "https://auth.cubiclauncher.org",
     "SERVER_NAME": "CubAuth",
-    "SUPABASE_URL": "https://YOUR_PROJECT.supabase.co",
+    "SUPABASE_URL": "https://jsfuiarusrvydgwdacbk.supabase.co",
     "SIGNING_PUBLIC_KEY": "-----BEGIN PUBLIC KEY-----\nMIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAosmdFnKJvZJF46Q4EP1e\niXRFPu3IPgGdyjEjTLKVUWHlHfIhmXlQgGmlnln4ICg2wbSjWnqeRDsTZkBWVAl+\nHZEFLkmnGyhrXakKWHPlJhwN0dcZVJKWrFYs70kSen0g2KK657VVopNfNT+WNI/3\n/Q9VeObCpxleghoGhiOFmxGCllASst59pELOBHYKk9jDSxmyzj6ZV+pbVDdKnwCn\nPv4TZpLtOwn+RGF/BAnmOn+2CbyLVZBfaujj4s5/qgkcvyn9azyq2eiivKwg3XWq\naGgHCgtloO8HVNj3K41iq+R0U1N+LGTZQULd0XFBynJ1uxdD1VAX+K4hN+DBUirP\nhwIDAQAB\n-----END PUBLIC KEY-----",
     "ALLOW_REGISTRATION": "true",
     "TOKEN_TTL_SECONDS": "1296000"
