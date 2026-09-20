@@ -101,11 +101,27 @@ describe('Workers HTTP routes', () => {
     }
   });
 
-  it('rejects foreign browser origins before touching Supabase', async () => {
+  it('allows registration from the Worker origin even with the default PUBLIC_URL', async () => {
+    const spy = vi.spyOn(globalThis, 'fetch').mockImplementation(async input => {
+      const url = new URL(String(input));
+      if (url.pathname.endsWith('/cubauth_rate_limit')) return Response.json(true);
+      if (url.pathname === '/auth/v1/signup') return Response.json({ user: { id: profile.user_id } });
+      throw new Error(`Unexpected fetch: ${url.pathname}`);
+    });
+    const response = await app.request('https://cubauth.example.workers.dev/account/register', {
+      method: 'POST',
+      headers: { Origin: 'https://cubauth.example.workers.dev', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email: 'player@example.com', username: 'PlayerOne', password: 'test-password-only' }),
+    }, { ...env, PUBLIC_URL: 'http://localhost:8787' });
+    expect(response.status).toBe(202);
+    expect(spy).toHaveBeenCalledTimes(2);
+  });
+
+  it.each(['https://evil.example', 'http://localhost:8787', 'null'])('rejects a foreign browser origin (%s) before touching Supabase', async origin => {
     const spy = vi.spyOn(globalThis, 'fetch');
     const response = await app.request('https://auth.example.com/authserver/invalidate', {
-      method: 'POST', headers: { Origin: 'https://evil.example', 'Content-Type': 'application/json' }, body: '{}',
-    }, env);
+      method: 'POST', headers: { Origin: origin, 'Content-Type': 'application/json' }, body: '{}',
+    }, { ...env, PUBLIC_URL: 'http://localhost:8787' });
     expect(response.status).toBe(403);
     expect(spy).not.toHaveBeenCalled();
   });

@@ -224,8 +224,10 @@ Para subir o eliminar una skin: `Authorization: Bearer ACCESS_TOKEN`.
 - Los límites y sesiones se guardan en Postgres, no en la memoria del Worker.
 - `CF-Connecting-IP` es proporcionado por Cloudflare. En desarrollo local, sin ese
   encabezado, se utiliza `127.0.0.1`.
-- Las peticiones nativas sin `Origin` están permitidas. El panel web usa el mismo
-  origen que `PUBLIC_URL`; no se habilita CORS para sitios externos.
+- Las peticiones nativas sin `Origin` están permitidas. Las peticiones del panel
+  deben venir del mismo origen que la URL del Worker que las recibe; no se habilita
+  CORS para sitios externos. `PUBLIC_URL` configura los enlaces de descubrimiento y
+  confirmación de correo, no esta comprobación de origen.
 
 ## Pruebas
 

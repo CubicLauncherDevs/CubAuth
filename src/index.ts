@@ -20,7 +20,9 @@ app.use('*', async (c, next) => {
   c.header('Cache-Control', 'no-store');
   if (!['GET', 'HEAD', 'OPTIONS'].includes(c.req.method)) {
     const origin = c.req.header('Origin');
-    if (origin && origin !== new URL(c.env.PUBLIC_URL).origin) throw new ApiError(403, 'ForbiddenOperationException', 'Origin not allowed.');
+    // Browser requests must match the URL actually serving the panel, including
+    // workers.dev/custom domains. PUBLIC_URL configures discovery and email links.
+    if (origin && origin !== new URL(c.req.url).origin) throw new ApiError(403, 'ForbiddenOperationException', 'Origin not allowed.');
   }
   await next();
 });
