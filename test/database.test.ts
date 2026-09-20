@@ -39,7 +39,7 @@ beforeAll(async () => {
     create schema auth; create schema storage;
     create table auth.users(id uuid primary key, email text unique, raw_user_meta_data jsonb,
       banned_until timestamptz, encrypted_password text, email_confirmed_at timestamptz default now(),
-      new_email text default '', created_at timestamptz default now());
+      email_change text default '', created_at timestamptz default now(), updated_at timestamptz default now());
     create table storage.buckets(id text primary key, name text, public boolean, file_size_limit bigint, allowed_mime_types text[]);
   `);
   await db.exec(readFileSync(new NodeURL('../supabase/migrations/202609200001_cubauth.sql', import.meta.url), 'utf8'));
@@ -201,7 +201,7 @@ describe('HTTP protocol with real SQL RPCs and simulated Supabase Auth', () => {
         expect(new Headers(init?.headers).get('apikey')).toBe('sb_publishable_test');
         const body = JSON.parse(String(init?.body));
         if (body.password) await db.query('update auth.users set encrypted_password=$1 where id=$2', [`hash-of-${body.password}`, USER]);
-        if (body.email) await db.query('update auth.users set new_email=$1 where id=$2', [body.email, USER]);
+        if (body.email) await db.query('update auth.users set email_change=$1 where id=$2', [body.email, USER]);
         return Response.json({ id: USER, email: 'player@example.com', new_email: body.email ?? '' });
       }
       if (url.pathname === '/auth/v1/resend') {
