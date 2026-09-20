@@ -50,7 +50,7 @@ language sql security definer set search_path = '' as $$
   select jsonb_build_object(
     'user_id', u.id, 'profile', to_jsonb(p), 'email', u.email,
     'email_confirmed', u.email_confirmed_at is not null,
-    'pending_email', nullif(u.new_email, ''), 'created_at', u.created_at,
+    'pending_email', nullif(u.email_change, ''), 'created_at', u.created_at,
     'name_history', coalesce((select jsonb_agg(h order by h.changed_at desc) from (
       select previous_name, new_name, changed_at from cubauth.name_history
       where profile_id = p.id order by changed_at desc limit 20
@@ -69,6 +69,9 @@ begin
   if p_name !~ '^[A-Za-z0-9_]{3,16}$' then return jsonb_build_object('error', 'InvalidUsername'); end if;
   select user_id into v_user from cubauth.sessions where token_hash = p_hash;
   if not found then return null; end if;
+  -- Match the row->advisory lock order of Supabase password updates and our
+  -- password trigger. NO KEY UPDATE remains compatible with session FK checks.
+  perform 1 from auth.users where id = v_user for no key update;
   perform pg_advisory_xact_lock(hashtextextended(v_user::text, 0));
   v_session := public.cubauth_session(p_hash);
   if v_session is null then return null; end if;
@@ -81,7 +84,7 @@ begin
       return jsonb_build_object('error', 'UsernameTaken');
     end;
     insert into cubauth.name_history(profile_id, previous_name, new_name) values (v_profile, v_old_name, p_name);
-    update auth.users set raw_user_meta_data = jsonb_set(coalesce(raw_user_meta_data, '{}'::jsonb), '{username}', to_jsonb(p_name)) where id = v_user;
+    update auth.users set raw_user_meta_data = jsonb_set(coalesce(raw_user_meta_data, '{}'::jsonb), '{username}', to_jsonb(p_name)), updated_at = clock_timestamp() where id = v_user;
     delete from cubauth.joins j using cubauth.sessions s where j.token_hash = s.token_hash and s.user_id = v_user;
     update cubauth.sessions set needs_refresh = true where user_id = v_user;
   end if;
