@@ -15,7 +15,8 @@
   },
   "dependencies": {
     "fast-png": "^8.0.0",
-    "hono": "^4.13.8"
+    "hono": "^4.13.8",
+    "ipaddr.js": "^2.5.0"
   },
   "devDependencies": {
     "@cloudflare/vitest-pool-workers": "^0.22.0",
@@ -26,5 +27,7 @@
     "vitest": "^4.1.0",
     "wrangler": "^4.135.0"
   },
-  "overrides": { "sharp": "^0.35.4" }
+  "overrides": {
+    "sharp": "^0.35.4"
+  }
 }

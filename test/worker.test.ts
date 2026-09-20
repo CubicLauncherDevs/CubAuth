@@ -83,6 +83,33 @@ describe('real Workers crypto and PNG processing', () => {
 describe('Workers HTTP routes', () => {
   const webOrigin = 'https://accounts.cubiclauncher.org';
 
+  it.each([
+    ['error_code', 'user_banned', 400, 'AccountBanned'],
+    ['code', 'user_banned', 403, 'AccountBanned'],
+    ['error_code', 'email_not_confirmed', 400, 'EmailNotConfirmed'],
+    ['code', 'email_not_confirmed', 403, 'EmailNotConfirmed'],
+    ['error_code', 'invalid_credentials', 400, 'ForbiddenOperationException'],
+  ] as const)('handles Supabase %s=%s without issuing a Yggdrasil session', async (field, providerCode, status, expectedCode) => {
+    const spy = vi.spyOn(globalThis, 'fetch').mockImplementation(async input => {
+      const path = new URL(String(input)).pathname;
+      if (path.endsWith('/cubauth_rate_limit')) return Response.json(true);
+      if (path.endsWith('/cubauth_login_identity')) return Response.json({ user_id: profile.user_id, email: 'player@example.com' });
+      if (path === '/auth/v1/token') return Response.json({ [field]: providerCode, message: 'private-provider-diagnostics' }, { status });
+      throw new Error(`Unexpected request: ${path}`);
+    });
+    const response = await app.request('https://auth.example.com/authserver/authenticate', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username: 'PlayerOne', password: 'test-password-only' }),
+    }, env);
+    expect(response.status).toBe(403);
+    const body = await response.json();
+    expect(body).toMatchObject({ error: expectedCode, errorMessage: expect.any(String) });
+    expect(body).not.toHaveProperty('accessToken');
+    expect(JSON.stringify(body)).not.toContain('private-provider-diagnostics');
+    expect(spy).toHaveBeenCalledTimes(4);
+    expect(spy.mock.calls.some(([input]) => String(input).includes('cubauth_issue_session'))).toBe(false);
+  });
+
   it('accepts preflights only for the configured origin, methods and headers', async () => {
     const spy = vi.spyOn(globalThis, 'fetch');
     const webEnv = { ...env, WEB_ORIGINS: webOrigin };

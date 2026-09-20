@@ -1,5 +1,6 @@
 import { Hono, type Context } from 'hono';
 import { accountRoutes } from './account';
+import { importRoutes } from './imports';
 import { rateLimit, tokenTtl, verifyPassword } from './auth';
 import { compactUuid, newToken, pem, sha256 } from './crypto';
 import { ApiError, badRequest, invalidToken } from './errors';
@@ -81,6 +82,7 @@ app.get('/', c => {
 });
 
 app.route('/account', accountRoutes);
+app.route('/account/import', importRoutes);
 
 app.post('/account/register', async c => {
   if (c.env.ALLOW_REGISTRATION !== 'true') throw new ApiError(403, 'ForbiddenOperationException', 'Registration is disabled.');

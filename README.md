@@ -258,6 +258,12 @@ Para subir o eliminar una skin: `Authorization: Bearer ACCESS_TOKEN`.
 
 ### Gestión de cuenta
 
+El login traduce los códigos de Supabase Auth `user_banned` y `email_not_confirmed`
+a `AccountBanned` y `EmailNotConfirmed` (HTTP 403). No emite tokens Yggdrasil en
+ninguno de esos casos. El panel muestra el estado correspondiente en lugar de
+confundirlo con una contraseña incorrecta. Se respetan las suspensiones configuradas
+en Supabase Auth y su opción **Confirm email**.
+
 Las operaciones de nombre, correo y contraseña requieren el token Yggdrasil de la
 cuenta **y su contraseña actual**. Supabase verifica la contraseña y realiza los
 cambios de credenciales; la sesión temporal de Supabase nunca sale del Worker.

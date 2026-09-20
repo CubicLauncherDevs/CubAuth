@@ -22,7 +22,17 @@ export async function withVerifiedPassword<T>(db: Supabase, username: string, pa
   }, false);
   if (res.status === 429) throw new ApiError(429, 'TooManyRequests', 'Too many attempts. Try again later.');
   if (res.status >= 500) throw new ApiError(503, 'ServiceUnavailable', 'Authentication unavailable.');
-  if (!res.ok) throw invalidCredentials();
+  if (!res.ok) {
+    const failure = await res.json().catch(() => null) as { error_code?: unknown; code?: unknown } | null;
+    const code = failure?.error_code ?? failure?.code;
+    if (code === 'user_banned') {
+      throw new ApiError(403, 'AccountBanned', 'This account is suspended. Contact support for assistance.');
+    }
+    if (code === 'email_not_confirmed') {
+      throw new ApiError(403, 'EmailNotConfirmed', 'Confirm your email address before signing in. You can request another verification email.');
+    }
+    throw invalidCredentials();
+  }
   const data = await res.json() as { user?: { id: string }; access_token?: string };
   try {
     if (!identity || data.user?.id !== identity.user_id || !data.access_token) throw invalidCredentials();
