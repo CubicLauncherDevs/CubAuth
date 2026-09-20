@@ -1,0 +1,4 @@
+SUPABASE_ANON_KEY="your-anon-or-publishable-key"
+SUPABASE_SERVICE_ROLE_KEY="your-service-role-or-secret-key"
+SIGNING_PRIVATE_KEY="-----BEGIN PRIVATE KEY-----\n...\n-----END PRIVATE KEY-----"
+SIGNING_PUBLIC_KEY="-----BEGIN PUBLIC KEY-----\n...\n-----END PUBLIC KEY-----"

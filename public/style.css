@@ -1,0 +1,31 @@
+:root { color-scheme: dark; font-family: system-ui, sans-serif; color: #e6edf5; background: #0e1420; }
+* { box-sizing: border-box; }
+body { margin: 0; padding: 40px 18px; }
+main { max-width: 540px; margin: auto; }
+header { display: flex; gap: 18px; align-items: center; margin-bottom: 28px; }
+h1, h2, h3, p { margin-top: 0; }
+h1 { margin-bottom: 4px; letter-spacing: -1px; }
+header p, small, .muted, footer { color: #a1b0c8; }
+.logo { color: #82e6c4; font-size: 64px; }
+section { background: #172132; border: 1px solid #2b3b53; padding: 26px; border-radius: 18px; }
+nav, .actions, .heading { display: flex; gap: 12px; align-items: center; justify-content: space-between; }
+nav { margin-bottom: 26px; }
+nav button { flex: 1; background: transparent; color: #a1b0c8; border: 1px solid #344762; }
+nav button[aria-pressed=true] { background: #273950; color: #fff; }
+label { display: block; margin: 18px 0; font-weight: 600; }
+input, select { display: block; width: 100%; margin-top: 8px; padding: 12px; border: 1px solid #40516b; border-radius: 9px; background: #0e1725; color: #edf3ff; font: inherit; }
+input[type=file] { font-size: 13px; }
+small { display: block; margin-top: 6px; font-size: 12px; font-weight: 400; }
+button { border: 0; border-radius: 9px; padding: 12px 18px; font: inherit; font-weight: 650; background: #82e6c4; color: #10251e; cursor: pointer; }
+button:hover { filter: brightness(1.08); }
+button:disabled { opacity: .5; cursor: wait; }
+button.secondary { background: #29394f; color: #e6edf5; }
+form > button { width: 100%; }
+:focus-visible { outline: 2px solid #82e6c4; outline-offset: 3px; }
+#notice { min-height: 24px; color: #82e6c4; overflow-wrap: anywhere; }
+#notice.error { color: #ffada6; }
+#skin-preview { display: block; image-rendering: pixelated; object-fit: contain; margin: 20px auto; background: #0e1420; border-radius: 8px; }
+[hidden], #skin-preview[hidden] { display: none !important; }
+code { overflow-wrap: anywhere; font-size: 12px; }
+footer { font-size: 13px; margin: 24px 0; line-height: 1.7; }
+@media (max-width: 420px) { section { padding: 18px; } .actions { flex-direction: column; align-items: stretch; } }

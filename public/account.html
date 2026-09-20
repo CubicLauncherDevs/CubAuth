@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>CubAuth · Tu cuenta</title>
+  <link rel="stylesheet" href="/style.css">
+  <script src="/app.js" defer></script>
+</head>
+<body>
+  <main>
+    <header><span class="logo" aria-hidden="true">◈</span><div><h1>CubAuth</h1><p>Tu cuenta. Tu skin. Tu mundo.</p></div></header>
+    <p id="notice" role="status" aria-live="polite"></p>
+    <section id="auth">
+      <nav aria-label="Cuenta"><button id="login-tab" type="button" aria-pressed="true">Entrar</button><button id="register-tab" type="button" aria-pressed="false">Crear cuenta</button></nav>
+      <form id="login-form">
+        <h2>Bienvenido de nuevo</h2>
+        <label>Correo o nombre de Minecraft<input name="username" autocomplete="username" maxlength="254" required></label>
+        <label>Contraseña<input name="password" type="password" autocomplete="current-password" maxlength="1024" required></label>
+        <button type="submit">Iniciar sesión</button>
+      </form>
+      <form id="register-form" hidden>
+        <h2>Creá tu perfil</h2>
+        <label>Correo<input name="email" type="email" autocomplete="email" maxlength="254" required></label>
+        <label>Nombre de Minecraft<input name="username" autocomplete="username" pattern="[A-Za-z0-9_]{3,16}" minlength="3" maxlength="16" required><small>3–16 letras, números o guiones bajos.</small></label>
+        <label>Contraseña<input name="password" type="password" autocomplete="new-password" minlength="10" maxlength="1024" required><small>Al menos 10 caracteres.</small></label>
+        <button type="submit">Crear cuenta</button>
+      </form>
+    </section>
+    <section id="profile" hidden>
+      <div class="heading"><h2 id="player-name"></h2><button id="logout" type="button" class="secondary">Salir</button></div>
+      <p class="muted">UUID: <code id="player-id"></code></p>
+      <form id="skin-form">
+        <h3>Tu skin</h3>
+        <img id="skin-preview" alt="Textura de tu skin" width="192" height="192" hidden>
+        <label>Archivo PNG<input name="file" type="file" accept="image/png" required><small>64×64 o 64×32, máximo 128 KiB. PNG no entrelazado, hasta 8 bits por canal.</small></label>
+        <label>Modelo<select name="model"><option value="">Clásico · brazos de 4 píxeles</option><option value="slim">Slim · brazos de 3 píxeles</option></select></label>
+        <div class="actions"><button type="submit">Guardar skin</button><button id="delete-skin" type="button" class="secondary">Quitar skin</button></div>
+      </form>
+    </section>
+    <footer>URI para tu launcher: <code id="server-url"></code><p>La sesión del panel se mantiene solo mientras esta página esté abierta.</p></footer>
+  </main>
+</body>
+</html>

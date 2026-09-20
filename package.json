@@ -1,0 +1,30 @@
+{
+  "name": "cubauth",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:db": "vitest run --config vitest.db.config.ts",
+    "check": "npm run typecheck && npm test && npm run test:db && wrangler deploy --dry-run",
+    "keys": "node scripts/generate-keys.mjs",
+    "smoke": "node scripts/smoke.mjs"
+  },
+  "dependencies": {
+    "fast-png": "^8.0.0",
+    "hono": "^4.13.8"
+  },
+  "devDependencies": {
+    "@cloudflare/vitest-pool-workers": "^0.22.0",
+    "@cloudflare/workers-types": "latest",
+    "@electric-sql/pglite": "^0.5.8",
+    "@types/node": "^24.0.0",
+    "typescript": "^5.9.3",
+    "vitest": "^4.1.0",
+    "wrangler": "^4.135.0"
+  },
+  "overrides": { "sharp": "^0.35.4" }
+}
