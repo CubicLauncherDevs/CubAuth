@@ -1,3 +1,4 @@
+SUPABASE_URL="https://your-project-ref.supabase.co"
 SUPABASE_ANON_KEY="your-anon-or-publishable-key"
 SUPABASE_SERVICE_ROLE_KEY="your-service-role-or-secret-key"
 SIGNING_PRIVATE_KEY="-----BEGIN PRIVATE KEY-----\n...\n-----END PRIVATE KEY-----"
