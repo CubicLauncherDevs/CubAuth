@@ -1,18 +1,20 @@
 import { Hono, type Context } from 'hono';
 import { accountRoutes } from './account';
 import { importRoutes } from './imports';
-import { rateLimit, tokenTtl, verifyPassword } from './auth';
+import { rateLimit, tokenTtl } from './auth';
+import { authenticateLauncher } from './launcher-tokens';
+import { oauthRoutes } from './oauth';
 import { compactUuid, newToken, pem, sha256 } from './crypto';
 import { ApiError, badRequest, invalidToken } from './errors';
 import { fullProfile, sessionResponse } from './profiles';
 import { MAX_SKIN_BYTES, sanitizeSkin } from './skins';
-import { Supabase } from './supabase';
+import { Database } from './database';
 import type { Env, Profile, Session } from './types';
 import { ip, jsonBody, jsonValue, optionalClient, readBody, requestUser, text, uuid } from './validation';
 
 type App = { Bindings: Env };
 const app = new Hono<App>();
-const database = (c: Context<App>) => new Supabase(c.env);
+const database = (c: Context<App>) => new Database(c.env);
 const clientIp = (c: Context<App>) => ip(c.req.header('CF-Connecting-IP') ?? '127.0.0.1');
 const baseUrl = (env: Env) => env.PUBLIC_URL.replace(/\/$/, '');
 const accountLinks = (env: Env) => env.ACCOUNT_URL ? {
@@ -76,38 +78,18 @@ app.get('/', c => {
       'feature.no_mojang_namespace': true,
       'feature.enable_profile_key': false,
     },
-    skinDomains: [new URL(c.env.SUPABASE_URL).hostname],
+    skinDomains: [new URL(c.env.PUBLIC_URL).hostname],
+    discordInviteUrl: c.env.DISCORD_INVITE_URL || 'https://discord.com/invite/7VaqSrPukm',
     signaturePublickey: pem(c.env.SIGNING_PUBLIC_KEY),
   });
 });
 
 app.route('/account', accountRoutes);
 app.route('/account/import', importRoutes);
+app.route('/discord', oauthRoutes);
 
 app.post('/account/register', async c => {
-  if (c.env.ALLOW_REGISTRATION !== 'true') throw new ApiError(403, 'ForbiddenOperationException', 'Registration is disabled.');
-  const data = await jsonBody(c.req.raw);
-  const email = text(data.email, 'email', 254).trim();
-  const username = text(data.username, 'username', 16);
-  const password = text(data.password, 'password');
-  if (!/^[A-Za-z0-9_]{3,16}$/.test(username)) throw badRequest('Username must contain 3–16 letters, digits or underscores.');
-  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || password.length < 10) throw badRequest('Use a valid email and a password of at least 10 characters.');
-  const db = database(c);
-  await rateLimit(db, 'register-ip', clientIp(c), 5, 3600);
-  const res = await db.request(`/auth/v1/signup?redirect_to=${encodeURIComponent(accountLinks(c.env).login)}`, {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ email, password, data: { username } }),
-  }, false);
-  if (res.status === 429) throw new ApiError(429, 'TooManyRequests', 'Too many attempts. Try again later.');
-  if (res.status >= 500) throw new ApiError(503, 'ServiceUnavailable', 'Registration unavailable. Check that the username is not already taken.');
-  if (!res.ok) throw badRequest('Could not register. Check the email, password and username.');
-  const result = await res.json() as { access_token?: string };
-  if (result.access_token) {
-    await db.request('/auth/v1/logout?scope=local', { method: 'POST', headers: { Authorization: `Bearer ${result.access_token}` } }, false).catch(() => {});
-  }
-  return c.json({ message: 'Registration received. If email confirmation is enabled, check your inbox before signing in.',
-    emailConfirmationRequired: !result.access_token,
-  }, 202);
+  return c.json({ error: 'DiscordRequired', errorMessage: 'Create your account with Discord on the account website.' }, 410);
 });
 
 app.post('/authserver/authenticate', async c => {
@@ -121,13 +103,10 @@ app.post('/authserver/authenticate', async c => {
     if (agent?.name !== 'Minecraft' || agent?.version !== 1) throw badRequest('Unsupported agent.');
   }
   const db = database(c);
-  const userId = await verifyPassword(db, username, password, clientIp(c));
-  const token = newToken();
-  const session = await db.rpc<Session | null>('cubauth_issue_session', {
-    p_user_id: userId, p_hash: await sha256(token), p_client: client, p_ttl: tokenTtl(c.env),
-  });
-  if (!session) throw invalidToken();
-  return c.json(sessionResponse(session, token, includeUser, true));
+  await rateLimit(db, 'launcher-auth-ip', clientIp(c), 40, 600);
+  await rateLimit(db, 'launcher-auth-name', username, 10, 600);
+  const { session, accessToken } = await authenticateLauncher(c.env, username, password, client);
+  return c.json(sessionResponse(session, accessToken, includeUser, true));
 });
 
 app.post('/authserver/refresh', async c => {
@@ -136,6 +115,8 @@ app.post('/authserver/refresh', async c => {
   const client = optionalClient(data.clientToken);
   const includeUser = requestUser(data.requestUser);
   const db = database(c);
+  const current = await db.session(hash, client, 'launcher');
+  if (!current) throw invalidToken();
   if (data.selectedProfile !== undefined) {
     if (!await db.rpc<Session | null>('cubauth_session', { p_hash: hash, p_client: client })) throw invalidToken();
     throw badRequest('Access token already has a profile assigned.');
@@ -166,8 +147,12 @@ app.post('/authserver/invalidate', async c => {
 app.post('/authserver/signout', async c => {
   const data = await jsonBody(c.req.raw);
   const db = database(c);
-  const userId = await verifyPassword(db, text(data.username, 'username', 254).trim(), text(data.password, 'password'), clientIp(c));
-  await db.rpc('cubauth_signout', { p_user_id: userId });
+  await rateLimit(db, 'launcher-auth-ip', clientIp(c), 40, 600);
+  const { session } = await authenticateLauncher(c.env, text(data.username, 'username', 16), text(data.password, 'password'), compactUuid(crypto.randomUUID()));
+  await db.db.batch([
+    db.statement("DELETE FROM sessions WHERE discord_id = ? AND kind = 'launcher'", session.discord_id),
+    db.statement('DELETE FROM launcher_tokens WHERE discord_id = ?', session.discord_id),
+  ]);
   return c.body(null, 204);
 });
 
@@ -202,12 +187,12 @@ app.post('/api/profiles/minecraft', async c => {
   return c.json(await database(c).rpc<{ id: string; name: string }[]>('cubauth_profiles', { p_names: data }));
 });
 
-async function skinOwner(c: Context<App>): Promise<{ db: Supabase; hash: string; profileId: string }> {
+async function skinOwner(c: Context<App>): Promise<{ db: Database; hash: string; profileId: string }> {
   const token = c.req.header('Authorization')?.match(/^Bearer ([a-f0-9]{64})$/i)?.[1];
   if (!token) throw new ApiError(401, 'Unauthorized', 'Missing or invalid bearer token.');
   const hash = await sha256(token);
   const db = database(c);
-  const session = await db.rpc<Session | null>('cubauth_session', { p_hash: hash });
+  const session = await db.session(hash);
   if (!session) throw new ApiError(401, 'Unauthorized', 'Invalid token.');
   const profileId = uuid(c.req.param('uuid'));
   if (session.profile.id !== profileId) throw new ApiError(403, 'ForbiddenOperationException', 'This profile does not belong to the session.');
@@ -230,10 +215,7 @@ app.put('/api/user/profile/:uuid/skin', async c => {
   if (!file || typeof file === 'string' || file.size > MAX_SKIN_BYTES) throw badRequest('Supply a PNG file up to 128 KiB.');
   const png = await sanitizeSkin(new Uint8Array(await file.arrayBuffer()), model);
   const skinHash = await sha256(png);
-  const upload = await db.request(`/storage/v1/object/skins/${skinHash}`, {
-    method: 'POST', headers: { 'Content-Type': 'image/png', 'x-upsert': 'true', 'Cache-Control': 'max-age=31536000' }, body: png,
-  });
-  if (!upload.ok) throw new ApiError(503, 'ServiceUnavailable', 'Skin storage unavailable.');
+  await c.env.SKINS.put(skinHash, png, { httpMetadata: { contentType: 'image/png', cacheControl: 'public, max-age=31536000, immutable' } });
   const updated = await db.rpc<boolean>('cubauth_set_skin', { p_hash: hash, p_profile: profileId, p_skin: skinHash, p_model: model });
   if (!updated) throw new ApiError(401, 'Unauthorized', 'Session expired while uploading.');
   return c.body(null, 204);
@@ -245,21 +227,26 @@ app.delete('/api/user/profile/:uuid/skin', async c => {
   return c.body(null, 204);
 });
 
-app.get('/account', async c => {
-  if (c.env.ACCOUNT_URL) return c.redirect(accountLinks(c.env).homepage, 302);
-  const asset = await c.env.ASSETS.fetch(new Request(new URL('/account.html', c.req.url)));
-  c.header('Content-Security-Policy', "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' https: data:; connect-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'");
-  c.header('X-Authlib-Injector-API-Location', `${baseUrl(c.env)}/`);
-  return c.newResponse(asset.body, asset.status as 200, { 'Content-Type': 'text/html; charset=utf-8' });
+app.get('/textures/:hash', async c => {
+  const hash = c.req.param('hash');
+  if (!/^[a-f0-9]{64}$/.test(hash)) throw badRequest('Invalid texture hash.');
+  const object = await c.env.SKINS.get(hash);
+  if (!object) return c.body(null, 404);
+  c.header('Content-Type', 'image/png');
+  c.header('Cache-Control', 'public, max-age=31536000, immutable');
+  c.header('Access-Control-Allow-Origin', '*');
+  c.header('ETag', object.httpEtag);
+  return c.body(object.body);
 });
-for (const path of ['/app.js', '/style.css']) {
-  app.get(path, c => c.env.ASSETS.fetch(c.req.raw));
-}
+app.get('/account', c => {
+  if (!c.env.ACCOUNT_URL) throw new ApiError(503, 'ConfigurationError', 'Configure ACCOUNT_URL.');
+  return c.redirect(accountLinks(c.env).homepage, 302);
+});
 
 export { app };
 export default {
   fetch: app.fetch,
   async scheduled(_controller: ScheduledController, env: Env, ctx: ExecutionContext) {
-    ctx.waitUntil(new Supabase(env).rpc('cubauth_cleanup'));
+    ctx.waitUntil(new Database(env).rpc('cubauth_cleanup'));
   },
 } satisfies ExportedHandler<Env>;

@@ -7,17 +7,16 @@
   "routes": [
     { "pattern": "auth.cubiclauncher.org", "custom_domain": true }
   ],
-  "assets": {
-    "directory": "./public",
-    "binding": "ASSETS",
-    "run_worker_first": true
-  },
+  "d1_databases": [{ "binding": "DB", "database_name": "cubauth", "database_id": "485f2dc9-d3e8-40e1-9b43-6b5d2757850f", "migrations_dir": "migrations" }],
+  "r2_buckets": [{ "binding": "SKINS", "bucket_name": "cubicskins" }],
   "triggers": { "crons": ["17 * * * *"] },
   "vars": {
     "PUBLIC_URL": "https://auth.cubiclauncher.org",
     "ACCOUNT_URL": "https://accounts.cubiclauncher.org",
     "WEB_ORIGINS": "https://accounts.cubiclauncher.org",
     "SERVER_NAME": "CubAuth",
+    "DISCORD_CLIENT_ID": "1305247641252397059",
+    "DISCORD_INVITE_URL": "https://discord.com/invite/7VaqSrPukm",
     "SIGNING_PUBLIC_KEY": "-----BEGIN PUBLIC KEY-----\nMIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAosmdFnKJvZJF46Q4EP1e\niXRFPu3IPgGdyjEjTLKVUWHlHfIhmXlQgGmlnln4ICg2wbSjWnqeRDsTZkBWVAl+\nHZEFLkmnGyhrXakKWHPlJhwN0dcZVJKWrFYs70kSen0g2KK657VVopNfNT+WNI/3\n/Q9VeObCpxleghoGhiOFmxGCllASst59pELOBHYKk9jDSxmyzj6ZV+pbVDdKnwCn\nPv4TZpLtOwn+RGF/BAnmOn+2CbyLVZBfaujj4s5/qgkcvyn9azyq2eiivKwg3XWq\naGgHCgtloO8HVNj3K41iq+R0U1N+LGTZQULd0XFBynJ1uxdD1VAX+K4hN+DBUirP\nhwIDAQAB\n-----END PUBLIC KEY-----",
     "ALLOW_REGISTRATION": "true",
     "TOKEN_TTL_SECONDS": "1296000"

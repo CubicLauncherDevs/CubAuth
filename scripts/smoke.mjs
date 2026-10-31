@@ -4,8 +4,8 @@ import { readFile } from 'node:fs/promises';
 
 const base = process.env.CUBAUTH_URL?.replace(/\/$/, '');
 const username = process.env.CUBAUTH_USERNAME;
-const password = process.env.CUBAUTH_PASSWORD;
-if (!base || !username || !password) throw new Error('Set CUBAUTH_URL, CUBAUTH_USERNAME and CUBAUTH_PASSWORD.');
+const password = process.env.CUBAUTH_LAUNCHER_TOKEN;
+if (!base || !username || !password) throw new Error('Set CUBAUTH_URL, CUBAUTH_USERNAME and CUBAUTH_LAUNCHER_TOKEN (one-use token from the website).');
 const url = new URL(base);
 if (url.protocol !== 'https:' && !['localhost', '127.0.0.1', '[::1]'].includes(url.hostname)) throw new Error('Use HTTPS except for localhost.');
 const tokens = new Set();
@@ -32,6 +32,8 @@ try {
   assert.match(session.selectedProfile.id, /^[a-f0-9]{32}$/);
   await post('/authserver/validate', { accessToken: session.accessToken, clientToken: session.clientToken }, 204);
   console.log('PASS authenticate + validate');
+  await post('/authserver/authenticate', { username, password }, 403);
+  console.log('PASS token cannot be reused');
 
   if (process.env.CUBAUTH_SKIN) {
     const form = new FormData();

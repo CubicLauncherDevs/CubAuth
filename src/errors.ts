@@ -1,5 +1,5 @@
 export interface ErrorDetails {
-  service: 'supabase';
+  service: 'discord' | 'cloudflare';
   operation: string;
   upstreamStatus?: number;
   upstreamCode?: string;

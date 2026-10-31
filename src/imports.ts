@@ -5,7 +5,7 @@ import { base64, sha256 } from './crypto';
 import { ApiError, badRequest } from './errors';
 import { ImportReader, limitedImportBody, publicImportUrl } from './import-fetch';
 import { MAX_SKIN_BYTES, sanitizeSkin } from './skins';
-import { Supabase } from './supabase';
+import { Database } from './database';
 import type { Env } from './types';
 import { ip, jsonBody, text } from './validation';
 
@@ -154,6 +154,6 @@ importRoutes.post('/preview', async c => {
   if (!/^[A-Za-z0-9_]{1,64}$/.test(identifier) && !compactId(identifier)) throw badRequest('Use a username or UUID.');
   if (provider === 'battly' && (!/^[A-Za-z0-9_]{1,16}$/.test(identifier) || compactId(identifier))) throw badRequest('Battly imports use a username, not a UUID.');
   const serverUrl = provider === 'authlib' ? baseUrl(text(body.serverUrl, 'Authlib server URL', 2048)).href : undefined;
-  await rateLimit(new Supabase(c.env), 'import-preview-ip', ip(c.req.header('CF-Connecting-IP') ?? '127.0.0.1'), 20, 600);
+  await rateLimit(new Database(c.env), 'import-preview-ip', ip(c.req.header('CF-Connecting-IP') ?? '127.0.0.1'), 20, 600);
   return c.json(await resolveImport({ provider, identifier, serverUrl }));
 });

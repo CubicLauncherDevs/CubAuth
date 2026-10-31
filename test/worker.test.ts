@@ -1,5 +1,7 @@
-import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
-import { env as workerEnv } from 'cloudflare:test';
+import { afterEach, beforeEach, beforeAll, describe, expect, it, vi } from 'vitest';
+import { env as workerEnv, applyD1Migrations, type D1Migration } from 'cloudflare:test';
+import { Database } from '../src/database';
+import { newToken } from '../src/crypto';
 import { encode, decode } from 'fast-png';
 import { app } from '../src/index';
 import { base64, bytes, sha256 } from '../src/crypto';
@@ -9,36 +11,76 @@ import type { Env, Profile } from '../src/types';
 
 let env: Env;
 let publicKey: CryptoKey;
-const profile: Profile = { id: '00000000-0000-4000-8000-000000000001', user_id: '00000000-0000-4000-8000-000000000002', name: 'PlayerOne', skin_model: 'slim', skin_hash: 'f'.repeat(64) };
-const skin = (height = 64) => encode({ width: 64, height, data: new Uint8Array(64 * height * 4).fill(128), text: { note: 'discard me' } });
+const profile: Profile = {
+  id: '00000000-0000-4000-8000-000000000001',
+  user_id: '00000000-0000-4000-8000-000000000002',
+  name: 'PlayerOne',
+  skin_model: 'slim',
+  skin_hash: 'f'.repeat(64),
+};
+const skin = (height = 64) =>
+  encode({
+    width: 64,
+    height,
+    data: new Uint8Array(64 * height * 4).fill(128),
+    text: { note: 'discard me' },
+  });
 
 beforeAll(async () => {
-  const pair = await crypto.subtle.generateKey({ name: 'RSASSA-PKCS1-v1_5', hash: 'SHA-1', modulusLength: 2048, publicExponent: new Uint8Array([1, 0, 1]) }, true, ['sign', 'verify']) as CryptoKeyPair;
+  const pair = (await crypto.subtle.generateKey(
+    {
+      name: 'RSASSA-PKCS1-v1_5',
+      hash: 'SHA-1',
+      modulusLength: 2048,
+      publicExponent: new Uint8Array([1, 0, 1]),
+    },
+    true,
+    ['sign', 'verify'],
+  )) as CryptoKeyPair;
   publicKey = pair.publicKey;
-  env = { ...workerEnv,
-    PUBLIC_URL: 'https://auth.example.com', SUPABASE_URL: 'https://test.supabase.co', SERVER_NAME: 'CubAuth test',
-    ALLOW_REGISTRATION: 'true', TOKEN_TTL_SECONDS: '1296000',
-    ACCOUNT_URL: '', WEB_ORIGINS: '',
-    SUPABASE_ANON_KEY: 'sb_publishable_test', SUPABASE_SERVICE_ROLE_KEY: 'sb_secret_test',
-    SIGNING_PUBLIC_KEY: `-----BEGIN PUBLIC KEY-----\n${base64(new Uint8Array(await crypto.subtle.exportKey('spki', pair.publicKey) as ArrayBuffer))}\n-----END PUBLIC KEY-----`,
-    SIGNING_PRIVATE_KEY: `-----BEGIN PRIVATE KEY-----\n${base64(new Uint8Array(await crypto.subtle.exportKey('pkcs8', pair.privateKey) as ArrayBuffer))}\n-----END PRIVATE KEY-----`,
+  env = {
+    ...workerEnv,
+    PUBLIC_URL: 'https://auth.example.com',
+    SERVER_NAME: 'CubAuth test',
+    ALLOW_REGISTRATION: 'true',
+    TOKEN_TTL_SECONDS: '1296000',
+    ACCOUNT_URL: 'https://accounts.example.com',
+    WEB_ORIGINS: 'https://accounts.example.com',
+    DISCORD_CLIENT_ID: '111',
+    DISCORD_CLIENT_SECRET: 'secret',
+    SIGNING_PUBLIC_KEY: `-----BEGIN PUBLIC KEY-----\n${base64(new Uint8Array((await crypto.subtle.exportKey('spki', pair.publicKey)) as ArrayBuffer))}\n-----END PUBLIC KEY-----`,
+    SIGNING_PRIVATE_KEY: `-----BEGIN PRIVATE KEY-----\n${base64(new Uint8Array((await crypto.subtle.exportKey('pkcs8', pair.privateKey)) as ArrayBuffer))}\n-----END PRIVATE KEY-----`,
   } as Env;
+  await applyD1Migrations(
+    env.DB,
+    (workerEnv as unknown as { TEST_MIGRATIONS: D1Migration[] }).TEST_MIGRATIONS,
+  );
 });
-afterEach(() => { vi.restoreAllMocks(); });
+afterEach(() => {
+  vi.restoreAllMocks();
+});
 
 describe('real Workers crypto and PNG processing', () => {
   it('signs the exact base64 property with RSA-SHA1 and advertises the skin domain', async () => {
     const result = await fullProfile(profile, env, true);
     for (const property of result.properties) {
-      const signature = Uint8Array.from(atob(property.signature!), c => c.charCodeAt(0));
-      expect(await crypto.subtle.verify('RSASSA-PKCS1-v1_5', publicKey, signature, bytes(property.value))).toBe(true);
-      expect(await crypto.subtle.verify('RSASSA-PKCS1-v1_5', publicKey, signature, bytes(property.value + 'x'))).toBe(false);
+      const signature = Uint8Array.from(atob(property.signature!), (c) => c.charCodeAt(0));
+      expect(
+        await crypto.subtle.verify('RSASSA-PKCS1-v1_5', publicKey, signature, bytes(property.value)),
+      ).toBe(true);
+      expect(
+        await crypto.subtle.verify('RSASSA-PKCS1-v1_5', publicKey, signature, bytes(property.value + 'x')),
+      ).toBe(false);
     }
     expect(JSON.parse(atob(result.properties[0]!.value)).textures.SKIN).toEqual({
-      url: `https://test.supabase.co/storage/v1/object/public/skins/${'f'.repeat(64)}`, metadata: { model: 'slim' },
+      url: `https://auth.example.com/textures/${'f'.repeat(64)}`,
+      metadata: { model: 'slim' },
     });
     const metadata = await app.request('https://auth.example.com/', {}, env);
-    expect(await metadata.json()).toMatchObject({ skinDomains: ['test.supabase.co'], signaturePublickey: env.SIGNING_PUBLIC_KEY });
+    expect(await metadata.json()).toMatchObject({
+      skinDomains: ['auth.example.com'],
+      signaturePublickey: env.SIGNING_PUBLIC_KEY,
+    });
   });
 
   it('strips PNG metadata and preserves bitmap and alpha', async () => {
@@ -51,8 +93,17 @@ describe('real Workers crypto and PNG processing', () => {
   });
 
   it('preserves indexed transparency when normalizing to RGBA', async () => {
-    const input = encode({ width: 64, height: 64, channels: 1, depth: 8,
-      data: new Uint8Array(4096).fill(1), palette: [[100, 200, 50, 0], [1, 2, 3, 255]] });
+    const input = encode({
+      width: 64,
+      height: 64,
+      channels: 1,
+      depth: 8,
+      data: new Uint8Array(4096).fill(1),
+      palette: [
+        [100, 200, 50, 0],
+        [1, 2, 3, 255],
+      ],
+    });
     const output = decode(await sanitizeSkin(input, 'default'));
     expect(output.channels).toBe(4);
     expect(Array.from(output.data.slice(0, 4))).toEqual([1, 2, 3, 255]);
@@ -65,8 +116,12 @@ describe('real Workers crypto and PNG processing', () => {
 
   it('rejects oversized dimensions, truncation, bad CRC and interlaced PNG', async () => {
     const large = encode({ width: 128, height: 64, data: new Uint8Array(128 * 64 * 4) });
-    const corrupt = skin(); corrupt[corrupt.length - 1] = corrupt[corrupt.length - 1]! ^ 1;
-    const interlaced = encode({ width: 64, height: 64, data: new Uint8Array(64 * 64 * 4) }, { interlace: 'Adam7' });
+    const corrupt = skin();
+    corrupt[corrupt.length - 1] = corrupt[corrupt.length - 1]! ^ 1;
+    const interlaced = encode(
+      { width: 64, height: 64, data: new Uint8Array(64 * 64 * 4) },
+      { interlace: 'Adam7' },
+    );
     for (const file of [large, skin().slice(0, 40), corrupt, new Uint8Array(131073), interlaced]) {
       await expect(sanitizeSkin(file, 'default')).rejects.toThrow('Invalid skin');
     }
@@ -80,293 +135,224 @@ describe('real Workers crypto and PNG processing', () => {
   });
 });
 
-describe('Workers HTTP routes', () => {
-  const webOrigin = 'https://accounts.cubiclauncher.org';
-
-  it.each([
-    ['error_code', 'user_banned', 400, 'AccountBanned'],
-    ['code', 'user_banned', 403, 'AccountBanned'],
-    ['error_code', 'email_not_confirmed', 400, 'EmailNotConfirmed'],
-    ['code', 'email_not_confirmed', 403, 'EmailNotConfirmed'],
-    ['error_code', 'invalid_credentials', 400, 'ForbiddenOperationException'],
-  ] as const)('handles Supabase %s=%s without issuing a Yggdrasil session', async (field, providerCode, status, expectedCode) => {
-    const spy = vi.spyOn(globalThis, 'fetch').mockImplementation(async input => {
-      const path = new URL(String(input)).pathname;
-      if (path.endsWith('/cubauth_rate_limit')) return Response.json(true);
-      if (path.endsWith('/cubauth_login_identity')) return Response.json({ user_id: profile.user_id, email: 'player@example.com' });
-      if (path === '/auth/v1/token') return Response.json({ [field]: providerCode, message: 'private-provider-diagnostics' }, { status });
-      throw new Error(`Unexpected request: ${path}`);
-    });
-    const response = await app.request('https://auth.example.com/authserver/authenticate', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ username: 'PlayerOne', password: 'test-password-only' }),
-    }, env);
-    expect(response.status).toBe(403);
-    const body = await response.json();
-    expect(body).toMatchObject({ error: expectedCode, errorMessage: expect.any(String) });
-    expect(body).not.toHaveProperty('accessToken');
-    expect(JSON.stringify(body)).not.toContain('private-provider-diagnostics');
-    expect(spy).toHaveBeenCalledTimes(4);
-    expect(spy.mock.calls.some(([input]) => String(input).includes('cubauth_issue_session'))).toBe(false);
-  });
-
-  it('accepts preflights only for the configured origin, methods and headers', async () => {
-    const spy = vi.spyOn(globalThis, 'fetch');
-    const webEnv = { ...env, WEB_ORIGINS: webOrigin };
-    const preflight = (origin: string, headers = 'authorization, content-type', method = 'PUT') => app.request('https://auth.example.com/api/user/profile/00000000000040008000000000000001/skin', {
-      method: 'OPTIONS', headers: { Origin: origin, 'Access-Control-Request-Method': method, 'Access-Control-Request-Headers': headers },
-    }, webEnv);
-    const allowed = await preflight(webOrigin);
-    expect(allowed.status).toBe(204);
-    expect(allowed.headers.get('Access-Control-Allow-Origin')).toBe(webOrigin);
-    expect(allowed.headers.get('Access-Control-Allow-Headers')).toContain('Authorization');
-    expect(allowed.headers.get('Access-Control-Allow-Credentials')).toBeNull();
-    expect(allowed.headers.get('Vary')).toContain('Origin');
-    for (const foreign of ['https://accounts.cubiclauncher.org.evil.example', 'https://evil.example', 'null']) {
-      const rejected = await preflight(foreign);
-      expect(rejected.status).toBe(403);
-      expect(rejected.headers.get('Access-Control-Allow-Origin')).toBeNull();
-    }
-    expect((await preflight(webOrigin, 'x-unknown-header')).status).toBe(403);
-    expect((await preflight(webOrigin, '', 'PATCH')).status).toBe(403);
-    expect(spy).not.toHaveBeenCalled();
-  });
-
-  it('allows registration from Vercel and returns readable CORS errors', async () => {
-    const webEnv = { ...env, WEB_ORIGINS: webOrigin, ACCOUNT_URL: webOrigin };
-    const spy = vi.spyOn(globalThis, 'fetch').mockImplementation(async input => {
-      const url = new URL(String(input));
-      if (url.pathname.endsWith('/cubauth_rate_limit')) return Response.json(true);
-      expect(url.pathname).toBe('/auth/v1/signup');
-      expect(url.searchParams.get('redirect_to')).toBe(`${webOrigin}/login`);
-      return Response.json({ user: { id: profile.user_id } });
-    });
-    const response = await app.request('https://auth.example.com/account/register', {
-      method: 'POST', headers: { Origin: webOrigin, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ email: 'player@example.com', username: 'PlayerOne', password: 'test-password-only' }),
-    }, webEnv);
-    expect(response.status).toBe(202);
-    expect(response.headers.get('Access-Control-Allow-Origin')).toBe(webOrigin);
-    expect(await response.json()).toMatchObject({ emailConfirmationRequired: true });
-    expect(spy).toHaveBeenCalledTimes(2);
-    const error = await app.request('https://auth.example.com/authserver/authenticate', {
-      method: 'POST', headers: { Origin: webOrigin, 'Content-Type': 'application/json' }, body: '{',
-    }, webEnv);
-    expect(error.status).toBe(400);
-    expect(error.headers.get('Access-Control-Allow-Origin')).toBe(webOrigin);
-  });
-
-  it('links to the new frontend and redirects the old account page without redirecting the API root', async () => {
-    const webEnv = { ...env, ACCOUNT_URL: webOrigin, WEB_ORIGINS: webOrigin };
-    const meta = await app.request('https://auth.example.com/', { headers: { Origin: webOrigin } }, webEnv);
-    expect(meta.status).toBe(200);
-    expect(meta.headers.get('Access-Control-Allow-Origin')).toBe(webOrigin);
-    expect(await meta.json()).toMatchObject({ meta: { registrationEnabled: true, links: { homepage: `${webOrigin}/account`, register: `${webOrigin}/register` } } });
-    const legacy = await app.request('https://auth.example.com/account', {}, webEnv);
-    expect(legacy.status).toBe(302);
-    expect(legacy.headers.get('Location')).toBe(`${webOrigin}/account`);
-  });
-
-  it('serves the panel with CSP and API discovery', async () => {
-    const response = await app.request('https://auth.example.com/account', {}, env);
-    expect(response.status).toBe(200);
-    expect(await response.text()).toContain('Tu cuenta. Tu skin. Tu mundo.');
-    expect(response.headers.get('Content-Security-Policy')).toContain("script-src 'self'");
-    expect(response.headers.get('X-Authlib-Injector-API-Location')).toBe('https://auth.example.com/');
-  });
-
-  it('returns JSON errors for unknown routes and malformed/oversized requests', async () => {
-    vi.spyOn(globalThis, 'fetch').mockImplementation(() => { throw new Error('No network expected'); });
-    const unknown = await app.request('https://auth.example.com/missing', {}, env);
-    expect(unknown.status).toBe(404);
-    expect(await unknown.json()).toMatchObject({ error: 'NotFound' });
-    for (const [body, status] of [['{', 400], ['a'.repeat(17000), 413]] as const) {
-      const response = await app.request('https://auth.example.com/authserver/authenticate', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' }, body,
-      }, env);
-      expect(response.status).toBe(status);
-    }
-  });
-
-  it('allows registration from the Worker origin even with the default PUBLIC_URL', async () => {
-    const spy = vi.spyOn(globalThis, 'fetch').mockImplementation(async input => {
-      const url = new URL(String(input));
-      if (url.pathname.endsWith('/cubauth_rate_limit')) return Response.json(true);
-      if (url.pathname === '/auth/v1/signup') return Response.json({ user: { id: profile.user_id } });
-      throw new Error(`Unexpected fetch: ${url.pathname}`);
-    });
-    const response = await app.request('https://cubauth.example.workers.dev/account/register', {
+const post = (path: string, body: unknown, token?: string) =>
+  app.request(
+    'https://auth.example.com' + path,
+    {
       method: 'POST',
-      headers: { Origin: 'https://cubauth.example.workers.dev', 'Content-Type': 'application/json' },
-      body: JSON.stringify({ email: 'player@example.com', username: 'PlayerOne', password: 'test-password-only' }),
-    }, { ...env, PUBLIC_URL: 'http://localhost:8787' });
-    expect(response.status).toBe(202);
-    expect(spy).toHaveBeenCalledTimes(2);
-  });
+      headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: 'Bearer ' + token } : {}) },
+      body: JSON.stringify(body),
+    },
+    env,
+  );
 
-  it.each(['https://YOUR_PROJECT.supabase.co', 'not-a-url', 'https://test.supabase.co/rest/v1'])('reports invalid Supabase configuration (%s) before making any request', async supabaseUrl => {
-    const spy = vi.spyOn(globalThis, 'fetch');
-    const response = await app.request('https://auth.example.com/account/register', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ email: 'player@example.com', username: 'PlayerOne', password: 'test-password-only' }),
-    }, { ...env, SUPABASE_URL: supabaseUrl });
-    expect(response.status).toBe(503);
-    expect(await response.json()).toMatchObject({ error: 'ConfigurationError', errorMessage: expect.stringContaining('SUPABASE_URL') });
-    expect(spy).not.toHaveBeenCalled();
-  });
-
-  it('explains upstream 530 errors without forwarding the backend body', async () => {
-    vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('private upstream diagnostics', { status: 530 }));
-    const log = vi.spyOn(console, 'error').mockImplementation(() => {});
-    const response = await app.request('https://auth.example.com/account/register', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ email: 'player@example.com', username: 'PlayerOne', password: 'test-password-only' }),
-    }, env);
-    expect(response.status).toBe(503);
-    const error = await response.text();
-    expect(error).toContain('HTTP 530');
-    expect(error).toContain('SUPABASE_URL');
-    expect(error).not.toContain('private upstream diagnostics');
-    expect(log).toHaveBeenCalledWith('Supabase operation failed', expect.objectContaining({
-      error: 'SupabaseConnectionFailed', host: 'test.supabase.co', operation: 'cubauth_rate_limit', upstreamStatus: 530,
-    }));
-  });
-
-  it.each([
-    [404, 'PGRST202', 'DatabaseFunctionMissing', 'migration'],
-    [400, '42P01', 'DatabaseSchemaMissing', 'migration'],
-    [400, '42703', 'DatabaseSchemaMissing', 'migration'],
-    [406, 'PGRST106', 'DatabaseSchemaNotExposed', 'public schema'],
-    [300, 'PGRST203', 'DatabaseFunctionAmbiguous', 'function signatures'],
-    [401, 'PGRST301', 'SupabaseCredentialsInvalid', 'SUPABASE_SERVICE_ROLE_KEY'],
-    [401, undefined, 'SupabaseCredentialsInvalid', 'SUPABASE_SERVICE_ROLE_KEY'],
-    [403, '42501', 'DatabasePermissionDenied', 'service_role'],
-    [401, '42501', 'DatabasePermissionDenied', 'service_role'],
-    [404, undefined, 'SupabaseEndpointNotFound', 'Data API'],
-    [429, undefined, 'SupabaseRateLimited', 'rate-limiting'],
-    [503, 'PGRST003', 'SupabaseUnavailable', 'project status'],
-    [500, undefined, 'SupabaseUnavailable', 'project status'],
-    [409, '23505', 'DatabaseOperationFailed', 'logs'],
-  ] as const)('diagnoses a database failure (HTTP %s, %s) without exposing upstream details', async (status, code, error, hint) => {
-    vi.spyOn(globalThis, 'fetch').mockResolvedValue(Response.json({
-      code, message: `request contained ${env.SUPABASE_SERVICE_ROLE_KEY}`,
-      details: 'SQL row contains private-password-and-email', hint: 'private upstream hint',
-    }, { status }));
-    const log = vi.spyOn(console, 'error').mockImplementation(() => {});
-    const response = await app.request('https://auth.example.com/account/register', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ email: 'player@example.com', username: 'PlayerOne', password: 'test-password-only' }),
-    }, env);
-    expect(response.status).toBe(503);
-    const body = await response.json();
-    expect(body).toMatchObject({ error, errorMessage: expect.stringContaining(hint), details: {
-      service: 'supabase', operation: 'cubauth_rate_limit', upstreamStatus: status,
-      ...(code ? { upstreamCode: code } : {}),
-    } });
-    const output = JSON.stringify([body, log.mock.calls]);
-    expect(output).not.toContain(env.SUPABASE_SERVICE_ROLE_KEY);
-    expect(output).not.toContain('private-password-and-email');
-    expect(output).not.toContain('private upstream hint');
-    expect(log).toHaveBeenCalledOnce();
-  });
-
-  it('handles non-JSON error pages and rejects nonstandard upstream codes', async () => {
-    const spy = vi.spyOn(globalThis, 'fetch');
-    vi.spyOn(console, 'error').mockImplementation(() => {});
-    for (const upstream of [
-      new Response('<html>private upstream error</html>', { status: 502 }),
-      Response.json({ code: 'private-upstream-code', message: 'private upstream error' }, { status: 400 }),
-    ]) {
-      spy.mockResolvedValueOnce(upstream);
-      const response = await app.request('https://auth.example.com/authserver/validate', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ accessToken: 'test-token' }),
-      }, env);
-      expect(response.status).toBe(503);
-      const output = await response.text();
-      expect(output).not.toContain('private');
-      expect(JSON.parse(output).details).not.toHaveProperty('upstreamCode');
-      expect(output).toContain('cubauth_session');
-    }
-  });
-
-  it('reports malformed successful responses instead of an unhandled 500', async () => {
-    vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('<html>proxy landing page</html>'));
-    vi.spyOn(console, 'error').mockImplementation(() => {});
-    const response = await app.request('https://auth.example.com/authserver/validate', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ accessToken: 'test-token' }),
-    }, env);
-    expect(response.status).toBe(503);
-    expect(await response.json()).toMatchObject({ error: 'SupabaseInvalidResponse', details: { upstreamStatus: 200 } });
-  });
-
-  it.each([
-    ['TypeError', 'SupabaseConnectionFailed'], ['TimeoutError', 'SupabaseTimeout'], ['AbortError', 'SupabaseTimeout'],
-  ])('classifies fetch failure %s', async (name, expectedError) => {
-    vi.spyOn(globalThis, 'fetch').mockRejectedValue(Object.assign(new Error(`private ${env.SUPABASE_SERVICE_ROLE_KEY}`), { name }));
-    const log = vi.spyOn(console, 'error').mockImplementation(() => {});
-    const response = await app.request('https://auth.example.com/authserver/validate', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ accessToken: 'test-token' }),
-    }, env);
-    expect(response.status).toBe(503);
-    const body = await response.json();
-    expect(body).toMatchObject({ error: expectedError, details: { operation: 'cubauth_session' } });
-    expect(JSON.stringify([body, log.mock.calls])).not.toContain(env.SUPABASE_SERVICE_ROLE_KEY);
-  });
-
-  it.each([
-    ['', 'SupabaseKeyMissing'], ['sb_publishable_wrong_role', 'SupabaseCredentialsInvalid'],
-  ])('rejects invalid service key configuration before making a request', async (key, expectedError) => {
-    const spy = vi.spyOn(globalThis, 'fetch');
-    vi.spyOn(console, 'error').mockImplementation(() => {});
-    const response = await app.request('https://auth.example.com/authserver/validate', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ accessToken: 'test-token' }),
-    }, { ...env, SUPABASE_SERVICE_ROLE_KEY: key });
-    expect(response.status).toBe(503);
-    expect(await response.json()).toMatchObject({ error: expectedError, errorMessage: expect.stringContaining('SUPABASE_SERVICE_ROLE_KEY') });
-    expect(spy).not.toHaveBeenCalled();
-  });
-
-  it.each(['https://evil.example', 'http://localhost:8787', 'null'])('rejects a foreign browser origin (%s) before touching Supabase', async origin => {
-    const spy = vi.spyOn(globalThis, 'fetch');
-    const response = await app.request('https://auth.example.com/authserver/invalidate', {
-      method: 'POST', headers: { Origin: origin, 'Content-Type': 'application/json' }, body: '{}',
-    }, { ...env, PUBLIC_URL: 'http://localhost:8787' });
-    expect(response.status).toBe(403);
-    expect(spy).not.toHaveBeenCalled();
-  });
-
-  it('stores a sanitized skin by hash and updates only the authenticated profile', async () => {
-    let stored: Uint8Array | undefined;
-    let update: Record<string, unknown> | undefined;
-    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
-      const url = new URL(String(input));
-      if (url.pathname.endsWith('/cubauth_session')) return Response.json({ user_id: profile.user_id, client_token: 'test', profile });
-      if (url.pathname.endsWith('/cubauth_rate_limit')) return Response.json(true);
-      if (url.pathname.startsWith('/storage/v1/object/skins/')) {
-        stored = init!.body as Uint8Array;
-        expect(url.pathname.split('/').at(-1)).toBe(await sha256(stored));
-        expect(new Headers(init!.headers).get('Content-Type')).toBe('image/png');
-        return Response.json({ Key: 'ok' });
-      }
-      if (url.pathname.endsWith('/cubauth_set_skin')) { update = JSON.parse(String(init!.body)); return Response.json(true); }
-      throw new Error(`Unexpected fetch: ${url.pathname}`);
+describe('Discord, D1, R2 and Yggdrasil HTTP flow', () => {
+  beforeEach(async () => {
+    await env.DB.batch(
+      [
+        'name_history',
+        'joins',
+        'sessions',
+        'launcher_tokens',
+        'profiles',
+        'accounts',
+        'oauth_states',
+        'login_tickets',
+        'registrations',
+        'rate_limits',
+      ].map((table) => env.DB.prepare('DELETE FROM ' + table)),
+    );
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const path = new URL(String(input)).pathname;
+      if (path.endsWith('/oauth2/token')) return Response.json({ access_token: 'discord-access' });
+      if (path.endsWith('/users/@me')) return Response.json({ id: '333' });
+      throw new Error('Unexpected external request');
     });
-    const form = new FormData();
-    form.set('model', 'slim'); form.set('file', new Blob([skin()], { type: 'image/png' }), 'skin.png');
-    const response = await app.request(`https://auth.example.com/api/user/profile/${profile.id.replaceAll('-', '')}/skin`, {
-      method: 'PUT', headers: { Authorization: `Bearer ${'a'.repeat(64)}` }, body: form,
-    }, env);
-    expect(response.status).toBe(204);
-    expect(decode(stored!).text).toEqual({});
-    expect(update).toMatchObject({ p_profile: profile.id, p_model: 'slim', p_skin: await sha256(stored!) });
   });
 
-  it('rejects skin upload for another profile before uploading a file', async () => {
-    const spy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(Response.json({ user_id: profile.user_id, client_token: 'test', profile }));
-    const response = await app.request('https://auth.example.com/api/user/profile/11111111111141118111111111111111/skin', {
-      method: 'PUT', headers: { Authorization: `Bearer ${'a'.repeat(64)}` },
-    }, env);
-    expect(response.status).toBe(403);
-    expect(spy).toHaveBeenCalledTimes(1);
+  async function oauth() {
+    const verifier = newToken();
+    const start = await post('/discord/start', { challenge: await sha256(verifier) });
+    expect(start.status).toBe(200);
+    const state = new URL(((await start.json()) as { url: string }).url).searchParams.get('state')!;
+    const response = await app.request(
+      'https://auth.example.com/discord/callback?' + new URLSearchParams({ code: 'discord-code', state }),
+      {},
+      env,
+    );
+    expect(response.status).toBe(302);
+    const location = new URL(response.headers.get('Location')!);
+    const code = new URLSearchParams(location.hash.slice(1)).get('code')!;
+    expect(code).toMatch(/^[a-f0-9]{64}$/);
+    return { code, verifier, state };
+  }
+  async function register() {
+    const pending = await oauth();
+    const exchange = await post('/discord/exchange', pending);
+    const { registrationToken } = (await exchange.json()) as { registrationToken: string };
+    const registered = await post('/discord/register', { registrationToken, username: 'PlayerOne' });
+    expect(registered.status).toBe(200);
+    return (
+      (await registered.json()) as {
+        session: { accessToken: string; clientToken: string; selectedProfile: { id: string; name: string } };
+      }
+    ).session;
+  }
+  it('completes OAuth, registration, web login, one-use token and launcher lifecycle', async () => {
+    const web = await register();
+    expect((await post('/account/session/validate', web)).status).toBe(204);
+    expect((await post('/authserver/validate', web)).status).toBe(403);
+    const issued = await post('/account/launcher-token', {}, web.accessToken);
+    expect(issued.status).toBe(200);
+    const { token } = (await issued.json()) as { token: string };
+    const login = await post('/authserver/authenticate', {
+      username: 'PlayerOne',
+      password: token,
+      clientToken: 'client',
+      requestUser: true,
+    });
+    expect(login.status).toBe(200);
+    const launcher = (await login.json()) as {
+      accessToken: string;
+      selectedProfile: { id: string };
+      user: { id: string };
+    };
+    expect(launcher.user.id).toMatch(/^[a-f0-9]{32}$/);
+    expect((await post('/authserver/authenticate', { username: 'PlayerOne', password: token })).status).toBe(
+      403,
+    );
+    expect((await post('/account/launcher-token', {}, launcher.accessToken)).status).toBe(401);
+    expect(
+      (
+        await post('/sessionserver/session/minecraft/join', {
+          accessToken: launcher.accessToken,
+          selectedProfile: launcher.selectedProfile.id,
+          serverId: 'server',
+        })
+      ).status,
+    ).toBe(204);
+    const joined = await app.request(
+      'https://auth.example.com/sessionserver/session/minecraft/hasJoined?username=PlayerOne&serverId=server',
+      {},
+      env,
+    );
+    expect(joined.status).toBe(200);
+    const rotated = await post('/authserver/refresh', {
+      accessToken: launcher.accessToken,
+      clientToken: 'client',
+    });
+    expect(rotated.status).toBe(200);
+    expect((await post('/authserver/validate', launcher)).status).toBe(403);
+    expect((await post('/account/signout-all', {}, web.accessToken)).status).toBe(204);
+    expect((await post('/account/session/validate', web)).status).toBe(401);
+    expect((await post('/authserver/validate', await rotated.json())).status).toBe(403);
+  });
+  it('binds OAuth tickets to the initiating tab and consumes state and tickets once', async () => {
+    const pending = await oauth();
+    expect((await post('/discord/exchange', { ...pending, verifier: newToken() })).status).toBe(403);
+    expect((await post('/discord/exchange', pending)).status).toBe(200);
+    expect((await post('/discord/exchange', pending)).status).toBe(403);
+    const replay = await app.request(
+      'https://auth.example.com/discord/callback?' +
+        new URLSearchParams({ code: 'code', state: pending.state }),
+      {},
+      env,
+    );
+    expect(replay.headers.get('Location')).toContain('error=DiscordStateExpired');
+    const invalid = await app.request(
+      'https://auth.example.com/discord/callback?code=code&state=bad',
+      {},
+      env,
+    );
+    expect(invalid.headers.get('Location')).not.toContain('#code=');
+  });
+  it('rejects failed Discord authorization and leaves email login disabled', async () => {
+    vi.mocked(fetch).mockResolvedValue(new Response(null, { status: 403 }));
+    const verifier = newToken();
+    const start = await post('/discord/start', { challenge: await sha256(verifier) });
+    const state = new URL(((await start.json()) as { url: string }).url).searchParams.get('state')!;
+    const callback = await app.request(
+      'https://auth.example.com/discord/callback?' + new URLSearchParams({ code: 'code', state }),
+      {},
+      env,
+    );
+    expect(callback.headers.get('Location')).toContain('#error=');
+    expect(
+      (await post('/account/register', { email: 'old@example.com', password: 'old-password' })).status,
+    ).toBe(410);
+    expect(
+      (await post('/authserver/authenticate', { username: 'OldPlayer', password: 'old-password' })).status,
+    ).toBe(403);
+    expect((await post('/account/password', {})).status).toBe(404);
+  });
+  it('uploads sanitized skins to R2, serves textures and rejects other-profile writes', async () => {
+    const web = await register();
+    const form = new FormData();
+    form.set('file', new Blob([skin()]), 'skin.png');
+    form.set('model', 'slim');
+    const upload = await app.request(
+      'https://auth.example.com/api/user/profile/' + web.selectedProfile.id + '/skin',
+      { method: 'PUT', headers: { Authorization: 'Bearer ' + web.accessToken }, body: form },
+      env,
+    );
+    expect(upload.status).toBe(204);
+    const current = await new Database(env).profileForDiscord('333');
+    const texture = await app.request('https://auth.example.com/textures/' + current!.skin_hash, {}, env);
+    expect(texture.status).toBe(200);
+    expect(texture.headers.get('Content-Type')).toBe('image/png');
+    expect(decode(new Uint8Array(await texture.arrayBuffer())).text).toEqual({});
+    const denied = await app.request(
+      'https://auth.example.com/api/user/profile/' + 'f'.repeat(32) + '/skin',
+      { method: 'DELETE', headers: { Authorization: 'Bearer ' + web.accessToken } },
+      env,
+    );
+    expect(denied.status).toBe(403);
+  });
+  it('renames without a password and preserves UUID and name history', async () => {
+    const web = await register();
+    const response = await post('/account/username', { username: 'NewPlayer' }, web.accessToken);
+    expect(response.status).toBe(200);
+    const next = ((await response.json()) as { session: typeof web }).session;
+    expect(next.selectedProfile.id).toBe(web.selectedProfile.id);
+    expect(next.selectedProfile.name).toBe('NewPlayer');
+    expect((await post('/account/session/validate', web)).status).toBe(401);
+    const details = await app.request(
+      'https://auth.example.com/account/me',
+      { headers: { Authorization: 'Bearer ' + next.accessToken } },
+      env,
+    );
+    expect(await details.json()).toMatchObject({
+      discordId: '333',
+      nameHistory: [{ previousName: 'PlayerOne', newName: 'NewPlayer' }],
+    });
+  });
+  it('enforces CORS, rejects oversized payloads and advertises the frontend', async () => {
+    const denied = await app.request(
+      'https://auth.example.com/discord/start',
+      {
+        method: 'POST',
+        headers: { Origin: 'https://evil.example', 'Content-Type': 'application/json' },
+        body: '{}',
+      },
+      env,
+    );
+    expect(denied.status).toBe(403);
+    const preflight = await app.request(
+      'https://auth.example.com/account/launcher-token',
+      {
+        method: 'OPTIONS',
+        headers: {
+          Origin: 'https://accounts.example.com',
+          'Access-Control-Request-Method': 'POST',
+          'Access-Control-Request-Headers': 'authorization,content-type',
+        },
+      },
+      env,
+    );
+    expect(preflight.status).toBe(204);
+    expect(preflight.headers.get('Access-Control-Allow-Origin')).toBe('https://accounts.example.com');
+    expect((await post('/discord/start', { challenge: 'x'.repeat(18000) })).status).toBe(413);
+    const panel = await app.request('https://auth.example.com/account', {}, env);
+    expect(panel.headers.get('Location')).toBe('https://accounts.example.com/account');
   });
 });

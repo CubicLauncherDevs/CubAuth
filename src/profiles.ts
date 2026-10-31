@@ -16,7 +16,7 @@ export function sessionResponse(session: Session, accessToken: string, requestUs
 export async function fullProfile(profile: Profile, env: Env, signed: boolean) {
   const textures = profile.skin_hash ? {
     SKIN: {
-      url: `${env.SUPABASE_URL.replace(/\/$/, '')}/storage/v1/object/public/skins/${profile.skin_hash}`,
+      url: `${env.PUBLIC_URL.replace(/\/$/, '')}/textures/${profile.skin_hash}`,
       ...(profile.skin_model === 'slim' ? { metadata: { model: 'slim' } } : {}),
     },
   } : {};
