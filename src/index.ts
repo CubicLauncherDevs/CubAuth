@@ -1,5 +1,6 @@
 import { Hono, type Context } from 'hono';
 import { accountRoutes } from './account';
+import { sessionToken } from './cookies';
 import { importRoutes } from './imports';
 import { rateLimit, tokenTtl } from './auth';
 import { authenticateLauncher } from './launcher-tokens';
@@ -34,7 +35,10 @@ app.use('*', async (c, next) => {
   const origin = c.req.header('Origin');
   const allowedOrigin = !!origin && (origin === new URL(c.req.url).origin
     || (c.env.WEB_ORIGINS ?? '').split(',').map(value => value.trim()).filter(Boolean).includes(origin));
-  if (allowedOrigin) c.header('Access-Control-Allow-Origin', origin!);
+  if (allowedOrigin) {
+    c.header('Access-Control-Allow-Origin', origin!);
+    c.header('Access-Control-Allow-Credentials', 'true');
+  }
   if (c.req.method === 'OPTIONS' && c.req.header('Access-Control-Request-Method')) {
     if (!allowedOrigin) throw new ApiError(403, 'ForbiddenOperationException', 'Origin not allowed.');
     const method = c.req.header('Access-Control-Request-Method')!;
@@ -190,7 +194,7 @@ app.post('/api/profiles/minecraft', async c => {
 });
 
 async function skinOwner(c: Context<App>): Promise<{ db: Database; hash: string; profileId: string }> {
-  const token = c.req.header('Authorization')?.match(/^Bearer ([a-f0-9]{64})$/i)?.[1];
+  const token = sessionToken(c);
   if (!token) throw new ApiError(401, 'Unauthorized', 'Missing or invalid bearer token.');
   const hash = await sha256(token);
   const db = database(c);

@@ -18,6 +18,8 @@ export async function rateLimit(
   if (!allowed) throw new ApiError(429, 'TooManyRequests', 'Too many attempts. Try again later.');
 }
 
+export const WEB_SESSION_TTL = 28800;
+
 export function tokenTtl(env: Env): number {
   const ttl = Number(env.TOKEN_TTL_SECONDS);
   return Number.isInteger(ttl) && ttl >= 60 && ttl <= 2592000 ? ttl : 1296000;

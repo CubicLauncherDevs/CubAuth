@@ -1,5 +1,6 @@
-import { Hono } from 'hono';
-import { rateLimit } from './auth';
+import { Hono, type Context } from 'hono';
+import { rateLimit, WEB_SESSION_TTL } from './auth';
+import { setSessionCookie } from './cookies';
 import { newToken, sha256 } from './crypto';
 import { Database } from './database';
 import { discordAuthorizationUrl, discordIdentity } from './discord';
@@ -22,11 +23,17 @@ export async function webSession(env: Env, discordId: string) {
     discordId,
     await sha256(accessToken),
     crypto.randomUUID(),
-    28800,
+    WEB_SESSION_TTL,
     'web',
   );
   if (!session) throw new ApiError(403, 'AccountBanned', 'Account unavailable.');
   return sessionResponse(session, accessToken, false);
+}
+
+/** The web panel keeps its session in an HttpOnly cookie; the JSON copy stays for clients that store it. */
+function sessionJson(c: Context<{ Bindings: Env }>, session: ReturnType<typeof sessionResponse>) {
+  setSessionCookie(c, session.accessToken);
+  return c.json({ session });
 }
 
 oauthRoutes.post('/start', async (c) => {
@@ -77,7 +84,7 @@ oauthRoutes.post('/exchange', async (c) => {
       ticket.discord_id,
       ticket.discord_email,
     );
-    return c.json({ session: await webSession(c.env, ticket.discord_id) });
+    return sessionJson(c, await webSession(c.env, ticket.discord_id));
   }
   const profile = await db.profileForDiscord(ticket.discord_id);
   if (profile) {
@@ -89,7 +96,7 @@ oauthRoutes.post('/exchange', async (c) => {
           ticket.discord_id,
         )
         .run();
-    return c.json({ session: await webSession(c.env, ticket.discord_id) });
+    return sessionJson(c, await webSession(c.env, ticket.discord_id));
   }
   if (c.env.ALLOW_REGISTRATION !== 'true')
     throw new ApiError(403, 'RegistrationDisabled', 'Registration is disabled.');
@@ -129,5 +136,5 @@ oauthRoutes.post('/register', async (c) => {
     )
     .first();
   if (!consumed) throw new ApiError(403, 'DiscordStateExpired', 'Start Discord login again.');
-  return c.json({ session: await webSession(c.env, registration.discord_id) });
+  return sessionJson(c, await webSession(c.env, registration.discord_id));
 });

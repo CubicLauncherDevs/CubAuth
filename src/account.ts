@@ -1,5 +1,6 @@
 import { Hono, type Context } from 'hono';
-import { rateLimit } from './auth';
+import { rateLimit, WEB_SESSION_TTL } from './auth';
+import { accessToken, clearSessionCookie, sessionToken, setSessionCookie } from './cookies';
 import { newToken, sha256 } from './crypto';
 import { Database } from './database';
 import { ApiError, badRequest } from './errors';
@@ -10,7 +11,7 @@ import { jsonBody, optionalClient, text } from './validation';
 
 export const accountRoutes = new Hono<{ Bindings: Env }>();
 async function currentAccount(c: Context<{ Bindings: Env }>) {
-  const token = c.req.header('Authorization')?.match(/^Bearer ([a-f0-9]{64})$/)?.[1];
+  const token = sessionToken(c);
   if (!token) throw new ApiError(401, 'Unauthorized', 'Sign in with Discord.');
   const db = new Database(c.env),
     hash = await sha256(token);
@@ -83,8 +84,9 @@ accountRoutes.post('/username', async (c) => {
     throw error;
   }
   const token = newToken();
-  const renewed = await db.refresh(hash, await sha256(token), session.client_token, 28800, 'web');
+  const renewed = await db.refresh(hash, await sha256(token), session.client_token, WEB_SESSION_TTL, 'web');
   if (!renewed) throw new ApiError(401, 'Unauthorized', 'Session expired.');
+  setSessionCookie(c, token);
   return c.json({ session: sessionResponse(renewed, token, false) });
 });
 
@@ -92,7 +94,7 @@ accountRoutes.post('/session/validate', async (c) => {
   const body = await jsonBody(c.req.raw);
   if (
     !(await new Database(c.env).session(
-      await sha256(text(body.accessToken, 'accessToken')),
+      await sha256(accessToken(c, body)),
       optionalClient(body.clientToken),
       'web',
     ))
@@ -103,12 +105,13 @@ accountRoutes.post('/session/validate', async (c) => {
 accountRoutes.post('/session/refresh', async (c) => {
   const body = await jsonBody(c.req.raw),
     db = new Database(c.env),
-    hash = await sha256(text(body.accessToken, 'accessToken'));
+    hash = await sha256(accessToken(c, body));
   const current = await db.session(hash, optionalClient(body.clientToken), 'web');
   if (!current) throw new ApiError(401, 'Unauthorized', 'Session expired.');
   const token = newToken(),
-    session = await db.refresh(hash, await sha256(token), current.client_token, 28800, 'web');
+    session = await db.refresh(hash, await sha256(token), current.client_token, WEB_SESSION_TTL, 'web');
   if (!session) throw new ApiError(401, 'Unauthorized', 'Session expired.');
+  setSessionCookie(c, token);
   return c.json(sessionResponse(session, token, false));
 });
 accountRoutes.post('/session/logout', async (c) => {
@@ -116,9 +119,10 @@ accountRoutes.post('/session/logout', async (c) => {
   await new Database(c.env)
     .statement(
       "DELETE FROM sessions WHERE token_hash = ? AND kind = 'web'",
-      await sha256(text(body.accessToken, 'accessToken')),
+      await sha256(accessToken(c, body)),
     )
     .run();
+  clearSessionCookie(c);
   return c.body(null, 204);
 });
 accountRoutes.post('/signout-all', async (c) => {
@@ -129,5 +133,6 @@ accountRoutes.post('/signout-all', async (c) => {
     db.statement('DELETE FROM login_tickets WHERE discord_id = ?', session.discord_id),
     db.statement('DELETE FROM registrations WHERE discord_id = ?', session.discord_id),
   ]);
+  clearSessionCookie(c);
   return c.body(null, 204);
 });

@@ -248,6 +248,39 @@ describe('Discord, D1, R2 and Yggdrasil HTTP flow', () => {
     expect((await post('/account/session/validate', web)).status).toBe(401);
     expect((await post('/authserver/validate', await rotated.json())).status).toBe(403);
   });
+  it('keeps the web session in an HttpOnly cookie, rotates it and clears it on logout', async () => {
+    await register();
+    const login = await post('/discord/exchange', await oauth());
+    expect(login.status).toBe(200);
+    const raw = login.headers.get('set-cookie')!;
+    expect(raw).toContain('cubauth_session=');
+    expect(raw).toContain('HttpOnly');
+    expect(raw).toContain('SameSite=Lax');
+    expect(raw).toContain('Path=/');
+    expect(raw).toContain('Secure');
+    const cookie = raw.split(';')[0]!;
+    const me = (headers: Record<string, string>) =>
+      app.request('https://auth.example.com/account/me', { headers }, env);
+    expect((await me({ Cookie: cookie })).status).toBe(200);
+    const refreshed = await app.request(
+      'https://auth.example.com/account/session/refresh',
+      { method: 'POST', headers: { Cookie: cookie, 'Content-Type': 'application/json' }, body: '{}' },
+      env,
+    );
+    expect(refreshed.status).toBe(200);
+    const rotated = refreshed.headers.get('set-cookie')!.split(';')[0]!;
+    expect(rotated).not.toBe(cookie);
+    expect((await me({ Cookie: cookie })).status).toBe(401);
+    expect((await me({ Cookie: rotated })).status).toBe(200);
+    const loggedOut = await app.request(
+      'https://auth.example.com/account/session/logout',
+      { method: 'POST', headers: { Cookie: rotated, 'Content-Type': 'application/json' }, body: '{}' },
+      env,
+    );
+    expect(loggedOut.status).toBe(204);
+    expect(loggedOut.headers.get('set-cookie')).toContain('Max-Age=0');
+    expect((await me({ Cookie: rotated })).status).toBe(401);
+  });
   it('binds OAuth tickets to the initiating tab and consumes state and tickets once', async () => {
     const pending = await oauth();
     expect((await post('/discord/exchange', { ...pending, verifier: newToken() })).status).toBe(403);
@@ -449,6 +482,7 @@ describe('Discord, D1, R2 and Yggdrasil HTTP flow', () => {
     );
     expect(preflight.status).toBe(204);
     expect(preflight.headers.get('Access-Control-Allow-Origin')).toBe('https://accounts.example.com');
+    expect(preflight.headers.get('Access-Control-Allow-Credentials')).toBe('true');
     expect((await post('/discord/start', { challenge: 'x'.repeat(18000) })).status).toBe(413);
     const panel = await app.request('https://auth.example.com/account', {}, env);
     expect(panel.headers.get('Location')).toBe('https://accounts.example.com/account');
