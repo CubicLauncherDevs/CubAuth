@@ -262,6 +262,17 @@ describe('Discord, D1, R2 and Yggdrasil HTTP flow', () => {
     const me = (headers: Record<string, string>) =>
       app.request('https://auth.example.com/account/me', { headers }, env);
     expect((await me({ Cookie: cookie })).status).toBe(200);
+    const restored = await app.request(
+      'https://auth.example.com/account/session',
+      { headers: { Cookie: cookie } },
+      env,
+    );
+    expect(restored.status).toBe(200);
+    expect(await restored.json()).toMatchObject({
+      accessToken: cookie.split('=')[1],
+      selectedProfile: { name: 'PlayerOne' },
+    });
+    expect((await app.request('https://auth.example.com/account/session', {}, env)).status).toBe(401);
     const refreshed = await app.request(
       'https://auth.example.com/account/session/refresh',
       { method: 'POST', headers: { Cookie: cookie, 'Content-Type': 'application/json' }, body: '{}' },

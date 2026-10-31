@@ -20,6 +20,12 @@ async function currentAccount(c: Context<{ Bindings: Env }>) {
   return { db, hash, session };
 }
 
+/** Rehydrates the panel from the HttpOnly cookie after a new tab or browser restart. */
+accountRoutes.get('/session', async (c) => {
+  const { session } = await currentAccount(c);
+  return c.json(sessionResponse(session, sessionToken(c)!, false));
+});
+
 accountRoutes.get('/me', async (c) => {
   const { db, session } = await currentAccount(c);
   const row = await db

@@ -14,13 +14,13 @@ Seguí [DEPLOY.md](./DEPLOY.md), incluyendo Discord, D1, R2, secretos, frontend 
 
 ## Desarrollo
 
-Requiere Node 24.12 o posterior y npm. Para el frontend se usa Bun.
+Requiere Node 24.12 o posterior y Bun.
 
 ```sh
-npm ci
+bun install
 cp .dev.vars.example .dev.vars
-npx wrangler d1 migrations apply cubauth --local
-npm run dev
+bunx wrangler d1 migrations apply cubauth --local
+bun run dev
 ```
 
 Completá `.dev.vars` con tu aplicación de desarrollo de Discord y registrá `http://localhost:8787/discord/callback` como redirect OAuth. El frontend local usa `VITE_AUTH_API_URL=http://localhost:8787`.
@@ -28,13 +28,13 @@ Completá `.dev.vars` con tu aplicación de desarrollo de Discord y registrá `h
 ## Comprobaciones
 
 ```sh
-npm run test:core
-npm run typecheck
-npm test
-npx wrangler deploy --dry-run
+bun run test:core
+bun run typecheck
+bun run test
+bunx wrangler deploy --dry-run
 ```
 
-`test:core` ejecuta los módulos reales de autenticación sobre SQLite y un adaptador con la misma semántica transaccional de D1. `npm test` añade pruebas HTTP con Workers, D1 y R2 locales, OAuth simulado, firmas RSA y normalización PNG. No usa Discord ni Cloudflare de producción.
+`test:core` ejecuta los módulos reales de autenticación sobre SQLite y un adaptador con la misma semántica transaccional de D1. `bun run test` añade pruebas HTTP con Workers, D1 y R2 locales, OAuth simulado, firmas RSA y normalización PNG. No usa Discord ni Cloudflare de producción.
 
 ## Contratos
 
@@ -44,6 +44,7 @@ npx wrangler deploy --dry-run
 - `POST /discord/register`: elige el nombre y finaliza el registro.
 - `POST /account/launcher-token`: exige sesión web y membresía; genera un token de una hora. Generar otro invalida el anterior.
 - `POST /authserver/authenticate`: consume el token y crea la sesión del launcher en una sola transacción.
+- `GET /account/session`: reconstruye la sesión web desde la cookie (o el bearer) para una pestaña nueva.
 - `POST /account/signout-all`: revoca sesiones web, sesiones del launcher y tokens pendientes.
 - La web guarda la sesión en la cookie `cubauth_session` (`HttpOnly`, `Secure`, `SameSite=Lax`, ocho horas). Se emite al intercambiar el ticket de Discord, se rota al renovar o cambiar el nombre y se borra al salir. Los endpoints web aceptan también `Authorization: Bearer`; el frontend debe usar `credentials: 'include'` y la API responde con `Access-Control-Allow-Credentials: true`.
 - Las rutas de perfiles, join/hasJoined, refresh, validate, invalidate y skins conservan el protocolo del launcher.
@@ -57,3 +58,7 @@ La nueva instalación **no importa cuentas ni sesiones de Supabase**. El Worker 
 El directorio `supabase/migrations` se conserva como historial del esquema anterior; no se ejecuta en D1 ni interviene en el servicio. Tampoco se usan los archivos del panel antiguo de `public`. Conservá un respaldo del sistema anterior antes del corte; no es necesario borrar el proyecto anterior para desplegar.
 
 Para deshabilitar una cuenta nueva, poné `accounts.disabled = 1` en D1. Las comprobaciones de sesión lo respetan inmediatamente.
+
+## Licencia
+
+GNU General Public License v3.0 (`GPL-3.0-only`). Ver [LICENSE](./LICENSE).
