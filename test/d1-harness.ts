@@ -1,11 +1,13 @@
 import { DatabaseSync, type SQLInputValue } from 'node:sqlite';
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
 import { fileURLToPath, URL as NodeUrl } from 'node:url';
 
 /** Real SQLite with D1's asynchronous interface and transactional batch semantics. */
 export function sqliteD1() {
   const sqlite = new DatabaseSync(':memory:');
-  sqlite.exec(readFileSync(fileURLToPath(new NodeUrl('../migrations/0001_discord.sql', import.meta.url)), 'utf8'));
+  const migrations = fileURLToPath(new NodeUrl('../migrations/', import.meta.url));
+  for (const file of readdirSync(migrations).filter((name) => name.endsWith('.sql')).sort())
+    sqlite.exec(readFileSync(`${migrations}${file}`, 'utf8'));
   class Statement {
     constructor(
       readonly sql: string,

@@ -21,14 +21,20 @@ export async function consumeState(env: Env, state: string) {
     )
     .first<{ challenge: string }>();
 }
-export async function createLoginTicket(env: Env, discordId: string, challenge: string) {
+export async function createLoginTicket(
+  env: Env,
+  discordId: string,
+  challenge: string,
+  discordEmail: string | null,
+) {
   const ticket = newToken();
   await new Database(env)
     .statement(
-      'INSERT INTO login_tickets(token_hash, discord_id, challenge, expires_at) VALUES (?, ?, ?, unixepoch() + 300)',
+      'INSERT INTO login_tickets(token_hash, discord_id, challenge, discord_email, expires_at) VALUES (?, ?, ?, ?, unixepoch() + 300)',
       await sha256(ticket),
       discordId,
       challenge,
+      discordEmail,
     )
     .run();
   return ticket;
@@ -37,9 +43,9 @@ export async function consumeLoginTicket(env: Env, code: string, verifier: strin
   return new Database(env)
     .statement(
       `DELETE FROM login_tickets WHERE token_hash = ? AND challenge = ?
-    AND expires_at > unixepoch() RETURNING discord_id`,
+    AND expires_at > unixepoch() RETURNING discord_id, discord_email`,
       await sha256(code),
       await sha256(verifier),
     )
-    .first<{ discord_id: string }>();
+    .first<{ discord_id: string; discord_email: string | null }>();
 }

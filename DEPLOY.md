@@ -132,6 +132,14 @@ No publiques ese valor ni guardes el comando en archivos compartidos. El test co
 
 ## Solución de problemas
 
+### Migración de cuentas anteriores
+
+Antes de publicar el Worker con `/migration/verify`, aplicá `npx wrangler d1 migrations apply cubauth --remote` para instalar `0002_legacy_link.sql`. Publicá después el Worker y el frontend. Conservá los secrets `SUPABASE_URL`, `SUPABASE_ANON_KEY` y `SUPABASE_SERVICE_ROLE_KEY` durante el período de migración; el login normal sigue usando Discord.
+
+Desde el login, “Vincular mi cuenta anterior” verifica la contraseña vieja y abre Discord. El ticket dura 10 minutos y se consume una sola vez al vincular. La cuenta previa del Discord se reemplaza en una transacción; sus sesiones se revocan. Los conflictos con otro Discord devuelven 409 sin borrar la cuenta actual. Se conserva el UUID de Minecraft, el nombre, la skin y los últimos 20 cambios de nombre disponibles en `cubauth_account` (el RPC viejo limita su respuesta a 20).
+
+Verificación en producción: usar una cuenta antigua de prueba y un Discord de prueba, comprobar UUID, skin, correo e historial; confirmar que la contraseña vieja incorrecta y la reutilización del ticket fallan. No usar cuentas reales ajenas para probar el reemplazo.
+
 - **Discord rechaza el callback:** compará la URL registrada en OAuth2 con `PUBLIC_URL + /discord/callback`; deben coincidir exactamente.
 - **Error de CORS:** `WEB_ORIGINS` debe contener el origen exacto del frontend, sin ruta. Para varios orígenes, separalos por comas.
 - **Falta una tabla o un binding:** verificá `DB`, `SKINS`, el UUID de D1 y que aplicaste la migración con `--remote`.

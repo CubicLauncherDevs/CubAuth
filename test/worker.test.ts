@@ -159,6 +159,7 @@ describe('Discord, D1, R2 and Yggdrasil HTTP flow', () => {
         'oauth_states',
         'login_tickets',
         'registrations',
+        'legacy_tickets',
         'rate_limits',
       ].map((table) => env.DB.prepare('DELETE FROM ' + table)),
     );
@@ -326,8 +327,105 @@ describe('Discord, D1, R2 and Yggdrasil HTTP flow', () => {
       nameHistory: [{ previousName: 'PlayerOne', newName: 'NewPlayer' }],
     });
   });
-  it('enforces CORS, rejects oversized payloads and advertises the frontend', async () => {
-    const denied = await app.request(
+  it('migrates a legacy Supabase account, keeping its UUID, profile, skin and history', async () => {
+    env.SUPABASE_URL = 'https://project.supabase.co';
+    env.SUPABASE_ANON_KEY = 'anon-key';
+    env.SUPABASE_SERVICE_ROLE_KEY = 'service-key';
+    const legacySkin = skin();
+    const legacySkinHash = await sha256(legacySkin);
+    const profileId = 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee';
+    vi.mocked(fetch).mockImplementation(async (input) => {
+      const path = new URL(String(input)).pathname;
+      if (path.endsWith('/oauth2/token')) return Response.json({ access_token: 'discord-access' });
+      if (path.endsWith('/users/@me'))
+        return Response.json({ id: '333', email: 'player@example.com' });
+      if (path === '/rest/v1/rpc/cubauth_login_identity')
+        return Response.json({ email: 'old@example.com', user_id: 'legacy-user' });
+      if (path === '/auth/v1/token') return Response.json({ user: { id: 'legacy-user' }, access_token: 'legacy-access' });
+      if (path === '/auth/v1/logout') return new Response(null, { status: 204 });
+      if (path === '/rest/v1/rpc/cubauth_issue_session')
+        return Response.json({ user_id: 'legacy-user' });
+      if (path === '/rest/v1/rpc/cubauth_account')
+        return Response.json({
+          profile: {
+            id: profileId,
+            user_id: 'legacy-user',
+            name: 'OldPlayer',
+            skin_hash: legacySkinHash,
+            skin_model: 'slim',
+          },
+          created_at: '2024-01-02T03:04:05Z',
+          name_history: [
+            { previous_name: 'First', new_name: 'OldPlayer', changed_at: '2024-01-01T00:00:00Z' },
+          ],
+          history_total: 1,
+        });
+      if (path === '/rest/v1/rpc/cubauth_invalidate') return Response.json(null);
+      if (path === `/storage/v1/object/public/skins/${legacySkinHash}`)
+        return new Response(legacySkin, { headers: { 'Content-Type': 'image/png' } });
+      throw new Error('Unexpected external request: ' + path);
+    });
+    await register(); // The Discord account already exists and must be replaced.
+    const verify = await post('/migration/verify', {
+      identifier: 'OldPlayer',
+      password: 'old-password',
+    });
+    expect(verify.status).toBe(200);
+    const { token } = (await verify.json()) as { token: string };
+    const pending = await oauth();
+    const exchange = await post('/discord/exchange', { ...pending, migrationToken: token });
+    expect(exchange.status).toBe(200);
+    const session = (
+      (await exchange.json()) as {
+        session: { accessToken: string; selectedProfile: { id: string; name: string } };
+      }
+    ).session;
+    expect(session.selectedProfile).toEqual({
+      id: profileId.replace(/-/g, ''),
+      name: 'OldPlayer',
+    });
+    const details = await app.request(
+      'https://auth.example.com/account/me',
+      { headers: { Authorization: 'Bearer ' + session.accessToken } },
+      env,
+    );
+    expect(await details.json()).toMatchObject({
+      discordId: '333',
+      discordEmail: 'player@example.com',
+      createdAt: '2024-01-02T03:04:05.000Z',
+      nameHistory: [{ previousName: 'First', newName: 'OldPlayer' }],
+      historyTotal: 1,
+    });
+    expect(
+      await env.DB.prepare(
+        "SELECT id, legacy_user_id, discord_email FROM accounts WHERE discord_id = '333'",
+      ).first(),
+    ).toEqual({ id: profileId, legacy_user_id: 'legacy-user', discord_email: 'player@example.com' });
+    const texture = await app.request('https://auth.example.com/textures/' + legacySkinHash, {}, env);
+    expect(texture.status).toBe(200);
+    expect(
+      (await env.DB.prepare('SELECT count(*) AS n FROM legacy_tickets').first<{ n: number }>())!.n,
+    ).toBe(0);
+  });
+  it('rejects invalid legacy credentials without creating a migration ticket', async () => {
+    env.SUPABASE_URL = 'https://project.supabase.co';
+    env.SUPABASE_ANON_KEY = 'anon-key';
+    env.SUPABASE_SERVICE_ROLE_KEY = 'service-key';
+    vi.mocked(fetch).mockImplementation(async (input) => {
+      const path = new URL(String(input)).pathname;
+      if (path === '/rest/v1/rpc/cubauth_login_identity') return Response.json(null);
+      if (path === '/auth/v1/token')
+        return Response.json({ error_code: 'invalid_grant' }, { status: 400 });
+      throw new Error('Unexpected external request: ' + path);
+    });
+    const verify = await post('/migration/verify', { identifier: 'Ghost', password: 'wrong' });
+    expect(verify.status).toBe(403);
+    expect(await verify.json()).toMatchObject({ error: 'MigrationCredentialsInvalid' });
+    expect(
+      (await env.DB.prepare('SELECT count(*) AS n FROM legacy_tickets').first<{ n: number }>())!.n,
+    ).toBe(0);
+  });
+  it('enforces CORS, rejects oversized payloads and advertises the frontend', async () => {    const denied = await app.request(
       'https://auth.example.com/discord/start',
       {
         method: 'POST',

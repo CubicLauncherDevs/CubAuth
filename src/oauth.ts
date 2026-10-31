@@ -4,6 +4,7 @@ import { newToken, sha256 } from './crypto';
 import { Database } from './database';
 import { discordAuthorizationUrl, discordIdentity } from './discord';
 import { ApiError, badRequest } from './errors';
+import { linkLegacy } from './migration';
 import { sessionResponse } from './profiles';
 import type { Env } from './types';
 import { jsonBody, text } from './validation';
@@ -48,9 +49,9 @@ oauthRoutes.get('/callback', async (c) => {
     if (!pending) throw new ApiError(403, 'DiscordStateExpired', 'Start Discord login again.');
     if (c.req.query('error'))
       throw new ApiError(403, 'DiscordLoginCancelled', 'Discord login was cancelled.');
-    const discordId = await discordIdentity(c.env, text(c.req.query('code'), 'code', 2048));
-    await db.profileForDiscord(discordId); // Enforce disabled accounts before creating a ticket.
-    const ticket = await createLoginTicket(c.env, discordId, pending.challenge);
+    const user = await discordIdentity(c.env, text(c.req.query('code'), 'code', 2048));
+    await db.profileForDiscord(user.id); // Enforce disabled accounts before creating a ticket.
+    const ticket = await createLoginTicket(c.env, user.id, pending.challenge, user.email);
     return c.redirect(`${destination}#code=${ticket}`, 302);
   } catch (error) {
     const code = error instanceof ApiError ? error.code : 'DiscordUnavailable';
@@ -69,16 +70,36 @@ oauthRoutes.post('/exchange', async (c) => {
     secret(body.verifier, 'verifier'),
   );
   if (!ticket) throw new ApiError(403, 'DiscordStateExpired', 'Start Discord login again.');
+  if (body.migrationToken !== undefined) {
+    await linkLegacy(
+      db,
+      secret(body.migrationToken, 'migrationToken'),
+      ticket.discord_id,
+      ticket.discord_email,
+    );
+    return c.json({ session: await webSession(c.env, ticket.discord_id) });
+  }
   const profile = await db.profileForDiscord(ticket.discord_id);
-  if (profile) return c.json({ session: await webSession(c.env, ticket.discord_id) });
+  if (profile) {
+    if (ticket.discord_email)
+      await db
+        .statement(
+          'UPDATE accounts SET discord_email = ? WHERE discord_id = ?',
+          ticket.discord_email,
+          ticket.discord_id,
+        )
+        .run();
+    return c.json({ session: await webSession(c.env, ticket.discord_id) });
+  }
   if (c.env.ALLOW_REGISTRATION !== 'true')
     throw new ApiError(403, 'RegistrationDisabled', 'Registration is disabled.');
   const registrationToken = newToken();
   await db
     .statement(
-      'INSERT INTO registrations(token_hash, discord_id, expires_at) VALUES (?, ?, unixepoch() + 600)',
+      'INSERT INTO registrations(token_hash, discord_id, discord_email, expires_at) VALUES (?, ?, ?, unixepoch() + 600)',
       await sha256(registrationToken),
       ticket.discord_id,
+      ticket.discord_email,
     )
     .run();
   return c.json({ registrationToken });
@@ -89,11 +110,18 @@ oauthRoutes.post('/register', async (c) => {
     db = new Database(c.env);
   const hash = await sha256(secret(body.registrationToken, 'registrationToken'));
   const registration = await db
-    .statement('SELECT discord_id FROM registrations WHERE token_hash = ? AND expires_at > unixepoch()', hash)
-    .first<{ discord_id: string }>();
+    .statement(
+      'SELECT discord_id, discord_email FROM registrations WHERE token_hash = ? AND expires_at > unixepoch()',
+      hash,
+    )
+    .first<{ discord_id: string; discord_email: string | null }>();
   if (!registration) throw new ApiError(403, 'DiscordStateExpired', 'Start Discord login again.');
   await rateLimit(db, 'register-discord', registration.discord_id, 10, 600);
-  await db.register(registration.discord_id, text(body.username, 'username', 16));
+  await db.register(
+    registration.discord_id,
+    text(body.username, 'username', 16),
+    registration.discord_email,
+  );
   const consumed = await db
     .statement(
       'DELETE FROM registrations WHERE token_hash = ? AND expires_at > unixepoch() RETURNING discord_id',

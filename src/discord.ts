@@ -19,13 +19,18 @@ export function discordAuthorizationUrl(env: DiscordConfig, state: string): stri
     client_id: env.DISCORD_CLIENT_ID,
     response_type: 'code',
     redirect_uri: callback(env),
-    scope: 'identify',
+    scope: 'identify email',
     state,
   }).toString();
   return url.toString();
 }
 
-export async function discordIdentity(env: DiscordConfig, code: string): Promise<string> {
+export interface DiscordUser {
+  id: string;
+  email: string | null;
+}
+
+export async function discordIdentity(env: DiscordConfig, code: string): Promise<DiscordUser> {
   const tokenResponse = await fetch(`${API}/oauth2/token`, {
     signal: AbortSignal.timeout(10_000),
     method: 'POST',
@@ -47,8 +52,14 @@ export async function discordIdentity(env: DiscordConfig, code: string): Promise
     headers: { Authorization: `Bearer ${token.access_token}` },
   });
   if (!response.ok) throw new ApiError(503, 'DiscordUnavailable', 'Discord identity unavailable.');
-  const user = (await response.json()) as { id?: unknown };
+  const user = (await response.json()) as { id?: unknown; email?: unknown };
   if (typeof user.id !== 'string' || !/^\d{1,20}$/.test(user.id))
     throw new ApiError(503, 'DiscordUnavailable', 'Invalid Discord identity.');
-  return user.id;
+  return {
+    id: user.id,
+    email:
+      typeof user.email === 'string' && user.email.length > 0 && user.email.length <= 254
+        ? user.email
+        : null,
+  };
 }

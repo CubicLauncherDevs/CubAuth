@@ -22,8 +22,11 @@ async function currentAccount(c: Context<{ Bindings: Env }>) {
 accountRoutes.get('/me', async (c) => {
   const { db, session } = await currentAccount(c);
   const row = await db
-    .statement('SELECT created_at FROM accounts WHERE discord_id = ?', session.discord_id)
-    .first<{ created_at: number }>();
+    .statement(
+      'SELECT created_at, discord_email FROM accounts WHERE discord_id = ?',
+      session.discord_id,
+    )
+    .first<{ created_at: number; discord_email: string | null }>();
   const history = await db
     .statement(
       'SELECT previous_name, new_name, changed_at FROM name_history WHERE profile_id = ? ORDER BY id DESC LIMIT 20',
@@ -35,6 +38,7 @@ accountRoutes.get('/me', async (c) => {
     .first<{ total: number }>();
   return c.json({
     discordId: session.discord_id,
+    discordEmail: row!.discord_email,
     createdAt: new Date(row!.created_at * 1000).toISOString(),
     nameHistory: history.results.map((item) => ({
       previousName: item.previous_name,

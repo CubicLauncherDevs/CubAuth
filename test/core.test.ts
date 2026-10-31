@@ -7,6 +7,7 @@ import { newToken, sha256 } from '../src/crypto';
 import { discordAuthorizationUrl, discordIdentity } from '../src/discord';
 import { rateLimit } from '../src/auth';
 import { beginLogin, consumeState, createLoginTicket, consumeLoginTicket } from '../src/oauth-tickets';
+import { linkLegacy } from '../src/migration';
 import type { Env } from '../src/types';
 
 let harness: ReturnType<typeof sqliteD1>, env: Env, database: Database, webHash: string;
@@ -245,9 +246,9 @@ test('records case-only name changes without changing the player identity', asyn
   assert.equal(harness.sqlite.prepare('SELECT new_name FROM name_history').get()!.new_name, 'playerone');
   assert.equal((await database.profileForDiscord('333'))!.id, profile.id);
 });
-test('Discord flow uses identify only and exchanges the code server-side', async () => {
+test('Discord flow asks for identify and email and exchanges the code server-side', async () => {
   const url = new URL(discordAuthorizationUrl(env, 'state'));
-  assert.equal(url.searchParams.get('scope'), 'identify');
+  assert.equal(url.searchParams.get('scope'), 'identify email');
   assert.equal(url.searchParams.get('state'), 'state');
   assert.equal(url.searchParams.get('redirect_uri'), 'https://auth.example.com/discord/callback');
   const paths: string[] = [];
@@ -260,7 +261,7 @@ test('Discord flow uses identify only and exchanges the code server-side', async
     }
     return Response.json({ id: '333' });
   };
-  assert.equal(await discordIdentity(env, 'code'), '333');
+  assert.deepEqual(await discordIdentity(env, 'code'), { id: '333', email: null });
   assert.deepEqual(paths, ['/api/v10/oauth2/token', '/api/v10/users/@me']);
 });
 
@@ -283,7 +284,7 @@ test('OAuth state is hashed, expires and can only be consumed once under a race'
 
 test('OAuth callback ticket requires the initiating browser secret and cannot be replayed', async () => {
   const verifier = newToken();
-  const ticket = await createLoginTicket(env, '333', await sha256(verifier));
+  const ticket = await createLoginTicket(env, '333', await sha256(verifier), null);
   assert.equal(await consumeLoginTicket(env, ticket, newToken()), null);
   const attempts = await Promise.all([
     consumeLoginTicket(env, ticket, verifier),
@@ -291,7 +292,84 @@ test('OAuth callback ticket requires the initiating browser secret and cannot be
   ]);
   assert.equal(attempts.filter(Boolean).length, 1);
   assert.equal(attempts.find(Boolean)!.discord_id, '333');
-  const expired = await createLoginTicket(env, '333', await sha256(verifier));
+  const expired = await createLoginTicket(env, '333', await sha256(verifier), null);
   harness.sqlite.exec('UPDATE login_tickets SET expires_at = unixepoch()');
   assert.equal(await consumeLoginTicket(env, expired, verifier), null);
+});
+
+test('links a verified legacy account to Discord, replacing any previous account', async () => {
+  const profileId = 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee';
+  const token = newToken();
+  await database
+    .statement(
+      'INSERT INTO legacy_tickets(token_hash, legacy_user_id, profile, history, expires_at) VALUES (?, ?, ?, ?, unixepoch() + 600)',
+      await sha256(token),
+      'legacy-user',
+      JSON.stringify({
+        id: profileId,
+        name: 'OldName',
+        skinHash: 'a'.repeat(64),
+        skinModel: 'slim',
+        createdAt: 1700000000,
+      }),
+      JSON.stringify([{ previousName: 'First', newName: 'OldName', changedAt: 1700000100 }]),
+    )
+    .run();
+  const attempts = await Promise.allSettled([
+    linkLegacy(database, token, '333', 'player@example.com'),
+    linkLegacy(database, token, '333', 'player@example.com'),
+  ]);
+  assert.equal(attempts.filter((result) => result.status === 'fulfilled').length, 1);
+  const rejected = attempts.find((result) => result.status === 'rejected') as PromiseRejectedResult;
+  assert.equal(rejected.reason.code, 'MigrationExpired');
+  const account = harness.sqlite
+    .prepare("SELECT id, legacy_user_id, discord_email, created_at FROM accounts WHERE discord_id = '333'")
+    .get()!;
+  assert.equal(account.id, profileId);
+  assert.equal(account.legacy_user_id, 'legacy-user');
+  assert.equal(account.discord_email, 'player@example.com');
+  assert.equal(account.created_at, 1700000000);
+  const profile = (await database.profileForDiscord('333'))!;
+  assert.equal(profile.name, 'OldName');
+  assert.equal(profile.skin_model, 'slim');
+  assert.equal(
+    harness.sqlite.prepare('SELECT previous_name FROM name_history WHERE profile_id = ?').get(profileId)!
+      .previous_name,
+    'First',
+  );
+  assert.equal(harness.sqlite.prepare('SELECT count(*) AS n FROM legacy_tickets').get()!.n, 0);
+  await assert.rejects(linkLegacy(database, token, '333', null), { code: 'MigrationExpired' });
+});
+
+test('rejects legacy links whose name is taken or whose account is already linked', async () => {
+  await database.register('444', 'TakenName');
+  const ticket = async (name: string, userId: string) => {
+    const token = newToken();
+    await database
+      .statement(
+        'INSERT INTO legacy_tickets(token_hash, legacy_user_id, profile, history, expires_at) VALUES (?, ?, ?, ?, unixepoch() + 600)',
+        await sha256(token),
+        userId,
+        JSON.stringify({
+          id: 'bbbbbbbb-cccc-4ddd-8eee-ffffffffffff',
+          name,
+          skinHash: null,
+          skinModel: 'default',
+          createdAt: 1700000000,
+        }),
+        '[]',
+      )
+      .run();
+    return token;
+  };
+  await assert.rejects(linkLegacy(database, await ticket('takenname', 'user-a'), '333', null), {
+    code: 'UsernameTaken',
+  });
+  await linkLegacy(database, await ticket('FreshName', 'user-b'), '333', null);
+  await assert.rejects(linkLegacy(database, await ticket('FreshName', 'user-c'), '444', null), {
+    code: 'LegacyAlreadyLinked',
+  });
+  await assert.rejects(linkLegacy(database, await ticket('FreshName', 'user-b'), '444', null), {
+    code: 'LegacyAlreadyLinked',
+  });
 });

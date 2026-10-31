@@ -53,7 +53,7 @@ export class Database {
     ).first<Profile>();
   }
 
-  async register(discordId: string, name: string): Promise<Profile> {
+  async register(discordId: string, name: string, discordEmail: string | null = null): Promise<Profile> {
     if (!/^[A-Za-z0-9_]{3,16}$/.test(name)) throw badRequest('Use 3–16 letters, numbers or underscores.');
     const existing = await this.profileForDiscord(discordId);
     if (existing) return existing;
@@ -62,9 +62,10 @@ export class Database {
     try {
       await this.db.batch([
         this.statement(
-          'INSERT INTO accounts(discord_id, id) VALUES (?, ?) ON CONFLICT(discord_id) DO NOTHING',
+          'INSERT INTO accounts(discord_id, id, discord_email) VALUES (?, ?, ?) ON CONFLICT(discord_id) DO NOTHING',
           discordId,
           crypto.randomUUID(),
+          discordEmail,
         ),
         this.statement(
           `INSERT INTO profiles(id, discord_id, name) SELECT ?, discord_id, ? FROM accounts
@@ -259,6 +260,7 @@ export class Database {
             'oauth_states',
             'login_tickets',
             'registrations',
+            'legacy_tickets',
           ].map((table) => this.db.prepare(`DELETE FROM ${table} WHERE expires_at <= unixepoch()`)),
         );
         result = null;

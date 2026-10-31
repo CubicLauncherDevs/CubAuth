@@ -3,6 +3,7 @@ import { accountRoutes } from './account';
 import { importRoutes } from './imports';
 import { rateLimit, tokenTtl } from './auth';
 import { authenticateLauncher } from './launcher-tokens';
+import { migrationRoutes } from './migration';
 import { oauthRoutes } from './oauth';
 import { compactUuid, newToken, pem, sha256 } from './crypto';
 import { ApiError, badRequest, invalidToken } from './errors';
@@ -87,6 +88,7 @@ app.get('/', c => {
 app.route('/account', accountRoutes);
 app.route('/account/import', importRoutes);
 app.route('/discord', oauthRoutes);
+app.route('/migration', migrationRoutes);
 
 app.post('/account/register', async c => {
   return c.json({ error: 'DiscordRequired', errorMessage: 'Create your account with Discord on the account website.' }, 410);
