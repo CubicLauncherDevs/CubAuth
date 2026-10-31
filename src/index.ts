@@ -110,7 +110,7 @@ app.post('/authserver/authenticate', async c => {
   }
   const db = database(c);
   await rateLimit(db, 'launcher-auth-ip', clientIp(c), 40, 600);
-  await rateLimit(db, 'launcher-auth-name', username, 10, 600);
+  await rateLimit(db, 'launcher-auth-name', username.toLowerCase(), 10, 600);
   const { session, accessToken } = await authenticateLauncher(c.env, username, password, client);
   return c.json(sessionResponse(session, accessToken, includeUser, true));
 });
@@ -154,7 +154,7 @@ app.post('/authserver/signout', async c => {
   const data = await jsonBody(c.req.raw);
   const db = database(c);
   await rateLimit(db, 'launcher-auth-ip', clientIp(c), 40, 600);
-  const { session } = await authenticateLauncher(c.env, text(data.username, 'username', 16), text(data.password, 'password'), compactUuid(crypto.randomUUID()));
+  const { session } = await authenticateLauncher(c.env, text(data.username, 'username', 254), text(data.password, 'password'), compactUuid(crypto.randomUUID()));
   await db.db.batch([
     db.statement("DELETE FROM sessions WHERE discord_id = ? AND kind = 'launcher'", session.discord_id),
     db.statement('DELETE FROM launcher_tokens WHERE discord_id = ?', session.discord_id),

@@ -28,6 +28,7 @@ export async function issueLauncherToken(
 
 /** Token consumption and session creation commit together, including concurrent logins. */
 export async function authenticateLauncher(env: Env, username: string, token: string, client: string) {
+  const identifier = username.trim();
   if (!/^[a-f0-9]{64}$/.test(token)) throw invalidCredentials();
   const database = new Database(env),
     hash = await sha256(token);
@@ -35,9 +36,10 @@ export async function authenticateLauncher(env: Env, username: string, token: st
     .statement(
       `SELECT t.discord_id FROM launcher_tokens t JOIN profiles p ON p.discord_id = t.discord_id
     JOIN accounts a ON a.discord_id = t.discord_id WHERE t.token_hash = ? AND t.expires_at > unixepoch()
-    AND p.name = ? COLLATE NOCASE AND a.disabled = 0`,
+    AND (p.name = ? COLLATE NOCASE OR a.discord_email = ? COLLATE NOCASE) AND a.disabled = 0`,
       hash,
-      username,
+      identifier,
+      identifier,
     )
     .first<{ discord_id: string }>();
   if (!identity) throw invalidCredentials();
@@ -48,12 +50,14 @@ export async function authenticateLauncher(env: Env, username: string, token: st
       `INSERT INTO sessions(token_hash, discord_id, profile_id, client_token, expires_at, kind)
       SELECT ?, t.discord_id, p.id, ?, unixepoch() + ?, 'launcher' FROM launcher_tokens t
       JOIN profiles p ON p.discord_id = t.discord_id JOIN accounts a ON a.discord_id = t.discord_id
-      WHERE t.token_hash = ? AND t.expires_at > unixepoch() AND p.name = ? COLLATE NOCASE AND a.disabled = 0`,
+      WHERE t.token_hash = ? AND t.expires_at > unixepoch()
+      AND (p.name = ? COLLATE NOCASE OR a.discord_email = ? COLLATE NOCASE) AND a.disabled = 0`,
       sessionHash,
       client,
       tokenTtl(env),
       hash,
-      username,
+      identifier,
+      identifier,
     ),
     database.statement(
       'DELETE FROM launcher_tokens WHERE token_hash = ? AND EXISTS (SELECT 1 FROM sessions WHERE token_hash = ?)',

@@ -53,7 +53,9 @@ bunx wrangler deploy --dry-run
 
 ## Cambio desde el sistema anterior
 
-La nueva instalación **no importa cuentas ni sesiones de Supabase**. El Worker deja de consultar ese servicio y ya no permite registro ni acceso con email/contraseña. Las cuentas nuevas reciben UUID nuevos: no conservan inventarios/permisos que un servidor de Minecraft vincule al UUID anterior.
+Las cuentas anteriores pueden vincularse a Discord desde el formulario de migración del login, verificando la contraseña anterior contra Supabase y conservando su UUID de Minecraft. Las cuentas nuevas reciben UUID nuevos.
+
+Para entrar al launcher, el campo `username` acepta el nombre de Minecraft o el correo de Discord guardado en la cuenta, sin distinguir mayúsculas. La contraseña sigue siendo el token de un solo uso generado en la web, que dura una hora. Si todavía no aparece el correo en “Mi cuenta”, volvé a iniciar sesión con Discord para actualizarlo. `/authserver/signout` también acepta ambos identificadores.
 
 El directorio `supabase/migrations` se conserva como historial del esquema anterior; no se ejecuta en D1 ni interviene en el servicio. Tampoco se usan los archivos del panel antiguo de `public`. Conservá un respaldo del sistema anterior antes del corte; no es necesario borrar el proyecto anterior para desplegar.
 
