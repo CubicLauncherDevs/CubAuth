@@ -292,6 +292,42 @@ describe('Discord, D1, R2 and Yggdrasil HTTP flow', () => {
     expect(loggedOut.headers.get('set-cookie')).toContain('Max-Age=0');
     expect((await me({ Cookie: rotated })).status).toBe(401);
   });
+  it('deletes the account only with the exact Minecraft name and clears its data', async () => {
+    const web = await register();
+    const issued = await post('/account/launcher-token', {}, web.accessToken);
+    const { token } = (await issued.json()) as { token: string };
+    const remove = (confirmation: string) =>
+      app.request(
+        'https://auth.example.com/account',
+        {
+          method: 'DELETE',
+          headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + web.accessToken },
+          body: JSON.stringify({ confirmation }),
+        },
+        env,
+      );
+    expect((await remove('playerone')).status).toBe(400);
+    expect((await post('/account/session/validate', web)).status).toBe(204);
+    const deleted = await remove('PlayerOne');
+    expect(deleted.status).toBe(204);
+    expect(deleted.headers.get('set-cookie')).toContain('Max-Age=0');
+    expect((await post('/account/session/validate', web)).status).toBe(401);
+    expect(
+      (
+        await app.request(
+          'https://auth.example.com/sessionserver/session/minecraft/profile/' + web.selectedProfile.id,
+          {},
+          env,
+        )
+      ).status,
+    ).toBe(204);
+    expect(
+      (await post('/authserver/authenticate', { username: 'PlayerOne', password: token })).status,
+    ).toBe(403);
+    const again = await register();
+    expect(again.selectedProfile.name).toBe('PlayerOne');
+    expect(again.selectedProfile.id).not.toBe(web.selectedProfile.id);
+  });
   it('binds OAuth tickets to the initiating tab and consumes state and tickets once', async () => {
     const pending = await oauth();
     expect((await post('/discord/exchange', { ...pending, verifier: newToken() })).status).toBe(403);

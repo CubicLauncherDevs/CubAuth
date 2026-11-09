@@ -46,6 +46,7 @@ bunx wrangler deploy --dry-run
 - `POST /authserver/authenticate`: consume el token y crea la sesión del launcher en una sola transacción.
 - `GET /account/session`: reconstruye la sesión web desde la cookie (o el bearer) para una pestaña nueva.
 - `POST /account/signout-all`: revoca sesiones web, sesiones del launcher y tokens pendientes.
+- `DELETE /account`: elimina la cuenta, el perfil, las sesiones y el historial. Exige `{ "confirmation": "<nombre de Minecraft exacto>" }`; es irreversible y borra la cookie de sesión.
 - La web guarda la sesión en la cookie `cubauth_session` (`HttpOnly`, `Secure`, `SameSite=Lax`, ocho horas). Se emite al intercambiar el ticket de Discord, se rota al renovar o cambiar el nombre y se borra al salir. Los endpoints web aceptan también `Authorization: Bearer`; el frontend debe usar `credentials: 'include'` y la API responde con `Access-Control-Allow-Credentials: true`.
 - Las rutas de perfiles, join/hasJoined, refresh, validate, invalidate y skins conservan el protocolo del launcher.
 - Las sesiones web duran ocho horas; las del launcher usan `TOKEN_TTL_SECONDS` (por defecto quince días). El vencimiento del token de ingreso no corta la sesión del juego.

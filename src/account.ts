@@ -142,3 +142,29 @@ accountRoutes.post('/signout-all', async (c) => {
   clearSessionCookie(c);
   return c.body(null, 204);
 });
+
+/** Irreversible removal. The exact Minecraft name is required as confirmation. */
+accountRoutes.delete('/', async (c) => {
+  const { db, session } = await currentAccount(c),
+    body = await jsonBody(c.req.raw);
+  if (text(body.confirmation, 'confirmation', 16) !== session.profile.name)
+    throw badRequest('Type your Minecraft name to confirm deletion.');
+  await db.db.batch([
+    db.statement(
+      'DELETE FROM joins WHERE profile_id IN (SELECT id FROM profiles WHERE discord_id = ?)',
+      session.discord_id,
+    ),
+    db.statement(
+      'DELETE FROM name_history WHERE profile_id IN (SELECT id FROM profiles WHERE discord_id = ?)',
+      session.discord_id,
+    ),
+    db.statement('DELETE FROM sessions WHERE discord_id = ?', session.discord_id),
+    db.statement('DELETE FROM launcher_tokens WHERE discord_id = ?', session.discord_id),
+    db.statement('DELETE FROM profiles WHERE discord_id = ?', session.discord_id),
+    db.statement('DELETE FROM accounts WHERE discord_id = ?', session.discord_id),
+    db.statement('DELETE FROM login_tickets WHERE discord_id = ?', session.discord_id),
+    db.statement('DELETE FROM registrations WHERE discord_id = ?', session.discord_id),
+  ]);
+  clearSessionCookie(c);
+  return c.body(null, 204);
+});
